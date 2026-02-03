@@ -20,6 +20,10 @@
 //
 // ✅ 스레드 안전(필수):
 // - ProcessTickAsync가 이벤트에서 중첩 호출될 수 있으므로 직렬화(SemaphoreSlim)
+//
+// ✅ 이번 수정(필수):
+// - FIRE 시 밴드별로 0300을 N번 부르지 않는다.
+// - 0300에 "배치 실행"을 1번만 호출하여, 0300 내부에서 순차 전송하도록 한다.
 // ------------------------------------------------------------
 
 using System;
@@ -166,18 +170,19 @@ namespace Exercise_1
 
                 string 방향표시 = GetArrow(cur);
 
-                if (_돌파방향 == 돌파방향.매도)
-                {
-                    //Console.WriteLine(
-                    //    $"Band={_돌파밴드K} Max={edgeMax:#,0} 방향={방향표시} 현재가={cur:#,0} 틱Max={tickMax:#,0} 꺽임={kk} 갭={viewGap:#,0}"
-                    //);
-                }
-                else // 매수
-                {
-                    //Console.WriteLine(
-                    //    $"Band={_돌파밴드K} Min={edgeMin:#,0} 방향={방향표시} 현재가={cur:#,0} 틱Min={tickMin:#,0} 꺽임={kk} 갭={viewGap:#,0}"
-                    //);
-                }
+                // 원하면 주석 해제
+                //if (_돌파방향 == 돌파방향.매도)
+                //{
+                //    Console.WriteLine(
+                //        $"Band={_돌파밴드K} Max={edgeMax:#,0} 방향={방향표시} 현재가={cur:#,0} 틱Max={tickMax:#,0} 꺽임={kk} 갭={viewGap:#,0}"
+                //    );
+                //}
+                //else
+                //{
+                //    Console.WriteLine(
+                //        $"Band={_돌파밴드K} Min={edgeMin:#,0} 방향={방향표시} 현재가={cur:#,0} 틱Min={tickMin:#,0} 꺽임={kk} 갭={viewGap:#,0}"
+                //    );
+                //}
 
                 // ─────────────────────────────────────────────
                 // 7) FIRE (turn + FIRE 허용 조건(LastBreakBand 기준))
@@ -198,22 +203,35 @@ namespace Exercise_1
                 if (!fireAllowed)
                     return;
 
-                // ✅ 실행 밴드 범위: StartBand(=세션 시작밴드) ~ LastBreakBand
+                // ✅ 핵심: 여기서 밴드별로 0300을 N번 호출하지 않는다.
+                // ✅ 0300의 "배치 실행"을 1번만 호출한다.
                 if (_돌파방향 == 돌파방향.매수)
                 {
-                    for (int b = _startBandAtBreak; b <= lastBreakBand; b++)
-                        밴드매칭.실행(SIDE_BUY, cur, b, startBandNow);
+                    // BUY 배치: startBandAtBreak ~ lastBreakBand (오름차순)
+                    밴드매칭.실행배치(
+                        side: SIDE_BUY,
+                        firePrice: cur,
+                        fromBand: _startBandAtBreak,
+                        toBand: lastBreakBand,
+                        startBandNow: startBandNow
+                    );
 
                     ResetAfterTrade("BUY");
                 }
                 else if (_돌파방향 == 돌파방향.매도)
                 {
-                    // 매도는 현재 구현을 보수적으로 유지
+                    // 매도는 기존 구현을 보수적으로 유지하되, 배치로만 보낸다.
                     int 현재밴드 = FindBandByPriceInMemory(cur);
                     int endBand = Math.Max(현재밴드 + 1, 1);
 
-                    for (int b = _startBandAtBreak; b >= endBand; b--)
-                        밴드매칭.실행(SIDE_SELL, cur, b, startBandNow);
+                    // SELL 배치: startBandAtBreak ~ endBand (내림차순)
+                    밴드매칭.실행배치(
+                        side: SIDE_SELL,
+                        firePrice: cur,
+                        fromBand: _startBandAtBreak,
+                        toBand: endBand,
+                        startBandNow: startBandNow
+                    );
 
                     ResetAfterTrade("SELL");
                 }
@@ -355,5 +373,4 @@ namespace Exercise_1
         }
     }
 }
-
-// 2026-01-21-00-00-00
+// 2026-02-03 48219

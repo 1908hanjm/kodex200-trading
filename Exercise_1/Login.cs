@@ -383,10 +383,13 @@ namespace Exercise_1
         // ─────────────────────────────────────────────
         // ✅ TEST 시작(실시간 XING 접속 금지)
         // ─────────────────────────────────────────────
-        private void StartTestMode()
+        // StartTestMode()를 "모의서버 로그인 + 주문 가능" 버전으로 교체
+        private async void StartTestMode()
         {
             try
             {
+                EnsureCoreModulesInitialized();
+
                 // 거래 토글
                 try
                 {
@@ -399,21 +402,52 @@ namespace Exercise_1
                 }
                 catch { }
 
-                // 실시간 틱은 중지
-                try { _tickFromXing?.Stop(); } catch { }
+                // ✅ TEST도 REAL처럼: 0100 생성 + 로그인 + 매매_Xing 생성
+                _xingConn = new _0100_Xing_connect(
+                    jmid: _0050_Real_Test환경결정.UserId,
+                    jmauth: _0050_Real_Test환경결정.Password,
+                    updateStatus: UpdateStatus,
+                    setPanel2Color: SetPanel2Color
+                );
 
-                // DB replay는 사용자가 button8로 시작할 수 있게 유지
-                UpdateStatus($"TEST 모드 준비 완료  {_0050_Real_Test환경결정.LogPrefix}  DB={DbPath}");
+                // ✅ 중요: ConnectAsync 내부가 "TEST면 모의서버"로 붙도록 되어 있어야 합니다.
+                // (그게 아니라면 _0100_Xing_connect 쪽에서 서버 선택 로직을 넣어야 합니다.)
+                _mmXing = await _xingConn.ConnectAsync(currentShcode);
+                if (_mmXing == null)
+                {
+                    UpdateStatus("TEST 로그인 실패");
+                    SetPanel2Color(Color.Red);
+                    return;
+                }
+
+                XingTrade = _mmXing;
+
+                // ✅ SC1 수신 시작 + Filled 이벤트 구독
+                TryStartSc1ReceiverOnce();
+                SubscribeSc1FilledOnce();
+
+                // ✅ Exec 생성 (이게 없어서 Exec null이 났던 겁니다)
+                _exec = new 매매실행(_mmXing, () => currentShcode);
+                _exec.Log += s => Debug.WriteLine("[매매실행][TEST] " + s);
+
+                // ✅ 실시간 틱은 원하면 계속 막아도 됨(= DB replay만 사용)
+                try { _tickFromXing?.Stop(); } catch { }
+                try { _tickFromDb?.Stop(); } catch { } // 사용자가 button8로 시작하니까 기본 stop 유지
+
+                UpdateStatus($"TEST(모의서버) 준비 완료  {_0050_Real_Test환경결정.LogPrefix}  DB={DbPath}");
                 SetPanel2Color(Color.LightSkyBlue);
 
-                Console.WriteLine($"[BOOT][TEST] ready db='{DbPath}' act='{Actno}'");
+                Console.WriteLine($"[BOOT][TEST] ready(SERVER) db='{DbPath}' act='{Actno}' execReady={(this.Exec != null)}");
             }
             catch (Exception ex)
             {
                 UpdateStatus("TEST 시작 오류: " + ex.Message);
                 SetPanel2Color(Color.Red);
+                Console.WriteLine("[BOOT][TEST] EX: " + ex);
             }
         }
+        // 2026-02-03 64192
+
 
         // ─────────────────────────────────────────────
         // ✅ REAL 시작 (기존 Login_Shown_Async의 자동접속 흐름을 여기로 이동)
@@ -998,9 +1032,118 @@ namespace Exercise_1
             }
             catch { }
         }
-
-        private void button3_Click(object sender, EventArgs e)
+        private async void button3_Click(object sender, EventArgs e)
         {
+            // =========================================================
+            // 1️⃣ t0424 추정순자산 조회 (button3 내부 로컬 함수)
+            // =========================================================
+            async Task<long> FetchSunamtAsync(TimeSpan timeout)
+            {
+                string resPath = @"C:\LS_SEC\xingAPI\Res\t0424.res";
+
+                string accno = (Actno ?? "").Trim();
+                string passwd = (JMpass ?? "").Trim(); // 현재 시스템 기준
+
+                if (string.IsNullOrWhiteSpace(accno))
+                    throw new Exception("계좌번호(Actno)가 비어있습니다.");
+                if (string.IsNullOrWhiteSpace(passwd))
+                    throw new Exception("비밀번호(JMpass)가 비어있습니다.");
+
+                var tcs = new TaskCompletionSource<long>();
+                XA_DATASETLib.XAQueryClass q = null;
+
+                try
+                {
+                    q = new XA_DATASETLib.XAQueryClass();
+                    q.LoadFromResFile(resPath);
+
+                    _IXAQueryEvents_ReceiveDataEventHandler onReceiveData = null;
+                    _IXAQueryEvents_ReceiveMessageEventHandler onReceiveMsg = null;
+
+                    onReceiveData = (trCode) =>
+                    {
+                        try
+                        {
+                            string raw = (q.GetFieldData("t0424OutBlock", "sunamt", 0) ?? "").Trim();
+
+                            if (!long.TryParse(raw, out long sunamt))
+                                throw new Exception($"sunamt parse fail raw='{raw}'");
+
+                            tcs.TrySetResult(sunamt);
+                        }
+                        catch (Exception ex)
+                        {
+                            tcs.TrySetException(ex);
+                        }
+                    };
+
+                    onReceiveMsg = (bIsSystemError, nMessageCode, szMessage) =>
+                    {
+                        Console.WriteLine($"[t0424 MSG] sysErr={bIsSystemError} code={nMessageCode} msg={szMessage}");
+                    };
+
+                    q.ReceiveData += onReceiveData;
+                    q.ReceiveMessage += onReceiveMsg;
+
+                    // InBlock
+                    q.SetFieldData("t0424InBlock", "accno", 0, accno);
+                    q.SetFieldData("t0424InBlock", "passwd", 0, passwd);
+                    q.SetFieldData("t0424InBlock", "prcgb", 0, "1");
+                    q.SetFieldData("t0424InBlock", "chegb", 0, "0");
+                    q.SetFieldData("t0424InBlock", "dangb", 0, "0");
+                    q.SetFieldData("t0424InBlock", "charge", 0, "1");
+                    q.SetFieldData("t0424InBlock", "cts_expcode", 0, "");
+
+                    int r = q.Request(false);
+                    if (r < 0)
+                        throw new Exception($"t0424 Request fail r={r}");
+
+                    var done = await Task.WhenAny(tcs.Task, Task.Delay(timeout));
+                    if (done != tcs.Task)
+                        throw new TimeoutException("t0424 timeout");
+
+                    return await tcs.Task;
+                }
+                finally
+                {
+                    try
+                    {
+                        if (q != null)
+                            System.Runtime.InteropServices.Marshal.FinalReleaseComObject(q);
+                    }
+                    catch { }
+                }
+            }
+
+            // =========================================================
+            // 2️⃣ 조회 실행 + MessageBox 표시
+            // =========================================================
+            try
+            {
+                long sunamt = await FetchSunamtAsync(TimeSpan.FromSeconds(10));
+
+                MessageBox.Show(
+                    this,
+                    $"추정순자산(sunamt)\r\n\r\n{sunamt:N0} 원",
+                    "t0424",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    this,
+                    "t0424 조회 실패\r\n" + ex.Message,
+                    "t0424 오류",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+            }
+
+            // =========================================================
+            // 3️⃣ 기존 button3 Clear 동작 유지
+            // =========================================================
             try
             {
                 try { richTextBox1.Clear(); } catch { }
@@ -1018,6 +1161,9 @@ namespace Exercise_1
 
             try { _tickCalc2?.Clear(); } catch { }
         }
+        // 2026-02-03 81742
+
+
 
         private void button4_Click(object sender, EventArgs e)
         {
