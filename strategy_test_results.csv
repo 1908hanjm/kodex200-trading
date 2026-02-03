@@ -1,0 +1,11 @@
+Scenario,Expected,Matched,Unexpected,Notes
+"1) Monotonic Up (80k→83k)",0,0,0,""
+"2) Monotonic Down (83k→80k)",0,0,0,""
+"3) Box Range (81k↔82k 반복)",2,0,0,"Missing signal at 20: expected Sell | Missing signal at 40: expected Buy"
+"4) V-Shape (82k→80k→82k)",1,0,0,"Missing signal at 16: expected Buy"
+"5) Gap Up at Open",1,0,0,"Missing signal at 11: expected Buy"
+"6) Noise Spikes",0,0,0,""
+"7) Cooldown / Debounce",1,0,0,"Missing signal at 12: expected Buy"
+"8) Re-Anchor & Re-Entry (only once)",1,0,0,"Missing signal at 14: expected Buy"
+"9) Invalid / Halt / Missing",0,0,0,""
+"10) Real-vs-Replay Consistency (synthetic)",0,0,0,""
