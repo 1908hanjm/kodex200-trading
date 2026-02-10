@@ -6,10 +6,14 @@
 // - 상단 OUT(cur > upper):
 //     textBox3=tickMax, textBox2=(tickMax-cur), textBox4/7=0
 // - 하단 OUT(cur < lower):
-//     textBox7=tickMin, textBox4=(cur-tickMin)  ★ GAP 표시(원하신 값: 69100-69000=100)
+//     textBox7=tickMin, textBox4=(cur-tickMin)  ★ GAP 표시
 //     textBox2/3=0
 // - ✅ 내부 tickList(_ticks)에 currentPrice를 누적하여 tickMin/tickMax를 계산
-// - ✅ 콘솔에 분기/값을 강하게 출력해서 “왜 안 바뀌는지” 즉시 확인 가능
+//
+// ✅ [추가] 거래밴드(옵션2: 지나온 밴드만 표시)
+// - 0270은 밴드번호를 "계산"하지 않는다. 호출자가 bandNo를 넘겨준다.
+// - bandNo가 바뀌는 순간, 직전 bandNo만 문자열에 누적한다. (현재 밴드는 누적하지 않음)
+// - FIRE 시점(체결 확정 등)에 ResetTradePath()를 호출해서 초기화한다.
 // ------------------------------------------------------------
 
 using System;
@@ -37,6 +41,31 @@ namespace Exercise_1
         private bool _wasAbove = false;
         private bool _wasBelow = false;
 
+        // =========================================================
+        // ✅ 거래밴드(옵션2) 최소 상태: string + int
+        // =========================================================
+        private string _tradeBandsPassed = ""; // "밴드5, 밴드4"
+        private int _prevBandNo = 0;           // 직전 bandNo (현재 bandNo는 포함하지 않음)
+        private bool _tradeActive = false;     // bandNo 추적 활성화 여부
+
+        /// <summary>
+        /// 옵션2 거래밴드 표시 문자열. 비어있으면 "(없음)" 리턴.
+        /// </summary>
+        public string TradeBandsPassedText
+        {
+            get { return string.IsNullOrEmpty(_tradeBandsPassed) ? "(없음)" : _tradeBandsPassed; }
+        }
+
+        /// <summary>
+        /// FIRE(매매 실행) 직후 호출: 거래밴드 초기화
+        /// </summary>
+        public void ResetTradePath()
+        {
+            _tradeBandsPassed = "";
+            _prevBandNo = 0;
+            _tradeActive = false;
+        }
+
         public _0270_틱계산2(
             Control owner,
             TextBox textBox1_Current,
@@ -54,8 +83,25 @@ namespace Exercise_1
             _textBox7_TickMin = textBox7_TickMin ?? throw new ArgumentNullException(nameof(textBox7_TickMin));
         }
 
+        // =========================================================
+        // ✅ 기존 호환용(밴드번호 모름): 거래밴드 추적 안함
+        // =========================================================
         public void UpdateByBand(long currentPrice, long 팔가격, long 살가격)
         {
+            UpdateByBand(currentPrice, 팔가격, 살가격, bandNo: 0);
+        }
+
+        // =========================================================
+        // ✅ 신규 오버로드: bandNo를 함께 받아 거래밴드(옵션2) 누적
+        // =========================================================
+        public void UpdateByBand(long currentPrice, long 팔가격, long 살가격, int bandNo)
+        {
+            // ✅ bandNo 추적(옵션2)
+            if (bandNo > 0)
+            {
+                TrackTradeBand_Option2(bandNo);
+            }
+
             // ✅ upper/lower 정규화 (팔/살 순서 뒤집혀도 안전)
             long upper = Math.Max(팔가격, 살가격);
             long lower = Math.Min(팔가격, 살가격);
@@ -64,7 +110,7 @@ namespace Exercise_1
             bool above = (currentPrice > upper);
             bool below = (currentPrice < lower);
 
-            // tick 누적 (listBox 역할)
+            // tick 누적
             _ticks.Add(currentPrice);
 
             // 메모리 보호
@@ -74,30 +120,23 @@ namespace Exercise_1
             long tickMin = _ticks.Min();
             long tickMax = _ticks.Max();
 
-            //Console.WriteLine(
-            //    $"[0270][CALL] cur={currentPrice} 팔={팔가격} 살={살가격} " +
-            //    $"upper={upper} lower={lower} inBand={inBand} above={above} below={below} " +
-            //    $"tickMin={tickMin} tickMax={tickMax}");
-
-            // 1) IN-BAND이면 리셋
+            // 1) IN-BAND이면 표시 리셋(거래밴드는 FIRE에서만 ResetTradePath로 초기화)
             if (inBand)
             {
                 _wasAbove = false;
                 _wasBelow = false;
 
                 ApplyInBandReset(currentPrice);
-                //Console.WriteLine("[0270][BRANCH] IN-BAND -> reset(2,3,4,7=0)");
                 return;
             }
 
-            // 2) OUT-BAND인데 둘 다 false면(이론상 없음) 방어
+            // 2) OUT-BAND인데 둘 다 false면 방어
             if (!above && !below)
             {
-                //Console.WriteLine("[0270][BRANCH] ??? (neither above nor below) -> return");
                 return;
             }
 
-            // ✅ 디버깅 단계에서는 “바뀐게 없다” 방지 위해 중복방지 OFF 권장
+            // 중복방지(디버깅 단계에서는 OFF 권장)
             // if (above && _wasAbove) return;
             // if (below && _wasBelow) return;
 
@@ -115,6 +154,37 @@ namespace Exercise_1
             {
                 ApplyOutBand(currentPrice, above, below, tickMin, tickMax);
             }
+        }
+
+        // ✅ 옵션2: “지나온 밴드만” 누적
+        private void TrackTradeBand_Option2(int currentBandNo)
+        {
+            if (!_tradeActive)
+            {
+                _tradeActive = true;
+                _prevBandNo = currentBandNo; // 기준만 잡음
+                return;
+            }
+
+            if (currentBandNo == _prevBandNo) return;
+
+            // band가 바뀌었다 = 직전 밴드를 “지나왔다”
+            AppendPassedBand(_prevBandNo);
+
+            // 기준 갱신
+            _prevBandNo = currentBandNo;
+        }
+
+        private void AppendPassedBand(int band)
+        {
+            if (band <= 0) return;
+
+            string token = "밴드" + band.ToString(CultureInfo.InvariantCulture);
+
+            if (string.IsNullOrEmpty(_tradeBandsPassed))
+                _tradeBandsPassed = token;
+            else
+                _tradeBandsPassed += ", " + token;
         }
 
         // IN-BAND: textbox 0 초기화
@@ -155,22 +225,17 @@ namespace Exercise_1
 
                     _textBox7_TickMin.Text = "0";
                     _textBox4_Gap.Text = "0";
-
-                    //Console.WriteLine($"[0270][APPLY] ABOVE -> tb3=tickMax({tickMax}), tb2=diff(tickMax-cur)({diff}), tb4/tb7=0");
                 }
                 else if (below)
                 {
                     _textBox7_TickMin.Text = tickMin.ToString(CultureInfo.InvariantCulture);
 
-                    // ★ 원하신 GAP: cur - tickMin
-                    // 예: tickMin=69000, cur=69100 => 100
+                    // GAP: cur - tickMin
                     long gap = currentPrice - tickMin;
                     _textBox4_Gap.Text = gap.ToString(CultureInfo.InvariantCulture);
 
                     _textBox3_TickMax.Text = "0";
                     _textBox2_Diff.Text = "0";
-
-                    //Console.WriteLine($"[0270][APPLY] BELOW -> tb7=tickMin({tickMin}), tb4=gap(cur-tickMin)({gap}), tb2/tb3=0");
                 }
             }
             catch { }
@@ -192,4 +257,4 @@ namespace Exercise_1
     }
 }
 
-// 2026-01-28 67158
+// 2026-02-10 59384

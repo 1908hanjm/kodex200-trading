@@ -6,14 +6,14 @@
 // - 수정: mapping 없으면 pending 저장 ✅
 // - 0600.Register 완료(OrdRegistered 이벤트) 시 즉시 pending flush ✅
 //
-// 로그(요청 포맷 유지):
-// [0650][SC1] ... (partial...)
+// ✅ 로그(부분체결/완전체결을 한글로 명확히)
+// [0650][SC1] ... (부분체결...)
+// [0650][SC1] ... (완전체결...)
 // [0650] COMPLETE band=43 -> UNLOCK -> NEXT
 // ------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using XA_DATASETLib;
 
 namespace Exercise_1
@@ -92,7 +92,7 @@ namespace Exercise_1
                     }
 
                     _subscribedMap = ordMap;
-                    try { _subscribedMap.OrdRegistered -= OnOrdRegistered; } catch { } // 중복 방지
+                    try { _subscribedMap.OrdRegistered -= OnOrdRegistered; } catch { }
                     _subscribedMap.OrdRegistered += OnOrdRegistered;
 
                     Console.WriteLine("[0650] hooked OrdMap.OrdRegistered");
@@ -105,7 +105,6 @@ namespace Exercise_1
         {
             try
             {
-                // ✅ Register 직후: pending 있으면 flush
                 FlushPendingForOrdNo(ordNo);
             }
             catch (Exception ex)
@@ -122,7 +121,6 @@ namespace Exercise_1
             {
                 if (_pendingByOrdNo.TryGetValue(ordNo, out list))
                 {
-                    // 복사해서 lock 밖에서 처리
                     _pendingByOrdNo.Remove(ordNo);
                     list = new List<PendingFill>(list);
                 }
@@ -132,7 +130,6 @@ namespace Exercise_1
 
             Console.WriteLine($"[0650][PENDING] flush START ordNo={ordNo} count={list.Count}");
 
-            // 도착 순서대로 처리
             list.Sort((a, b) => a.ArrivedAt.CompareTo(b.ArrivedAt));
 
             foreach (var pf in list)
@@ -147,7 +144,6 @@ namespace Exercise_1
         {
             try
             {
-                // ✅ 혹시 OrdMap 교체되는 구조면, SC1 수신 중에도 다시 hook 시도
                 lock (_lock)
                 {
                     TryHookOrdMapRegisterEvent_NoLock();
@@ -171,10 +167,8 @@ namespace Exercise_1
                     return;
                 }
 
-                // ✅ 핵심: mapping 없으면 pending 저장, 있으면 즉시 처리
                 if (!TryProcessOrPend(ordNo, execNo, filledQty, filledPrice))
                 {
-                    // pending으로 들어간 케이스
                     return;
                 }
             }
@@ -194,7 +188,6 @@ namespace Exercise_1
                 return false;
             }
 
-            // mapping이 아직 없을 수 있으므로, 여기서 AddFill을 먼저 해보고 실패하면 pending
             if (!ordMap.AddFill(
                     ordNo: ordNo,
                     filledQty: filledQty,
@@ -210,7 +203,6 @@ namespace Exercise_1
                 return false;
             }
 
-            // ✅ mapping이 있으면 즉시 처리
             ProcessMappedResult(
                 ordNo, execNo, filledQty, filledPrice,
                 sideKor, band, orderQty, cumFill, remain, isComplete,
@@ -238,7 +230,6 @@ namespace Exercise_1
                     ArrivedAt = DateTime.Now
                 });
 
-                // pending 폭주 방지(보수적)
                 if (list.Count > 50)
                 {
                     list.RemoveRange(0, list.Count - 50);
@@ -246,7 +237,6 @@ namespace Exercise_1
             }
         }
 
-        // pending flush에서 “다시 AddFill”을 수행해야 하므로, 공통 처리 함수 분리
         private void ProcessOneFill_WithMap(long ordNo, long execNo, int filledQty, double filledPrice, bool fromPending)
         {
             var ordMap = Login.OrdMap;
@@ -291,14 +281,14 @@ namespace Exercise_1
             bool isComplete,
             bool fromPending)
         {
-            // ✅ 요청 포맷(부분/완료)
+            // ✅ 한글로 명확화
             if (!isComplete)
             {
-                Console.WriteLine($"[0650][SC1] band={band} ordNo={ordNo} execNo={execNo} cum={cumFill} remain={remain} (partial...)");
+                Console.WriteLine($"[0650][SC1] band={band} ordNo={ordNo} execNo={execNo} cum={cumFill} remain={remain} (부분체결...)");
             }
             else
             {
-                Console.WriteLine($"[0650][SC1] band={band} ordNo={ordNo} execNo={execNo} cum={cumFill} remain={remain} (complete...)");
+                Console.WriteLine($"[0650][SC1] band={band} ordNo={ordNo} execNo={execNo} cum={cumFill} remain={remain} (완전체결...)");
             }
 
             if (fromPending)
@@ -307,11 +297,10 @@ namespace Exercise_1
             }
             else
             {
-                // 기존 상세 로그(유지)
                 Console.WriteLine($"[0650][SC1] ordNo={ordNo} execNo={execNo} side={sideKor} band={band} fill={filledQty} price={filledPrice} cumFill={cumFill}/{orderQty} remain={remain}");
             }
 
-            // 0700 반영(체결 수량만큼)
+            // 0700 반영
             var up0700 = Login.AfterFillUpdate70;
             if (up0700 == null)
             {
@@ -340,16 +329,13 @@ namespace Exercise_1
             if (!isComplete)
             {
                 gate.MarkPartialFill(ordNo, cumFill, remain);
-                return; // ✅ A안: 부분체결이면 다음 밴드 절대 진행하지 않음
+                return; // ✅ A안: 부분체결이면 다음 밴드 진행 금지
             }
 
-            // ✅ 완전체결: 잠금 해제
             gate.MarkCompleteFill(ordNo, cumFill);
 
-            // ✅ 체인 NEXT 로그 (당신 로그와 동일 포맷 유지)
             Console.WriteLine($"[0650] COMPLETE band={band} -> UNLOCK -> NEXT");
 
-            // ✅ 다음 밴드 전송(또는 종료)
             밴드매칭.OnTradeCompleted_ThenSendNextOrFinish(band);
         }
 
@@ -421,7 +407,8 @@ namespace Exercise_1
             }
         }
 
-        // 2026-02-09 73410
+        // 2026-02-10 21947
     }
 }
-// 2026-02-09 98162
+
+// 2026-02-10 86502

@@ -796,6 +796,7 @@ namespace Exercise_1
         {
             try
             {
+                try { _tickCalc2?.ResetTradePath(); } catch { }
                 if (!IsHandleCreated) return;
 
                 Console.WriteLine($"[LOGIN][FILLED] side={sideKor} band={band} qty={deltaQty} price={price} execNo={execNo}");
@@ -824,7 +825,6 @@ namespace Exercise_1
                 Console.WriteLine("[LOGIN][FILLED] handler EX: " + ex);
             }
         }
-
         private void HandleUiTick(double price)
         {
             // ✅ UI 표시용 중복틱 방지(표시만)
@@ -842,30 +842,37 @@ namespace Exercise_1
                     int priceInt = (int)Math.Round(price);
 
                     textBox1.Text = priceInt.ToString(CultureInfo.InvariantCulture);
-                    OnTickArrived(priceInt);
 
-                    // ✅ 0270 호출 (StartBand 기준 팔/살)
+                    // ✅ 0270 먼저 호출: tradeBandText를 먼저 "갱신"해야 아래 RenderDesc가 최신 값을 출력한다.
                     if (_tickCalc2 != null)
                     {
                         int startBandNow = (this.CurrentStartBand > 0) ? this.CurrentStartBand : Login.시작밴드변수;
+
+                        // ✅ bandNo는 FocusBand 우선(있으면), 없으면 startBandNow
+                        int bandNoForTrade = (Login.FocusBand > 0) ? Login.FocusBand : startBandNow;
+
                         var br = Login.BandList.FirstOrDefault(b => b != null && b.Band == startBandNow);
                         if (br != null)
                         {
                             _tickCalc2.UpdateByBand(
                                 currentPrice: priceInt,
                                 팔가격: br.팔가격,
-                                살가격: br.살가격
+                                살가격: br.살가격,
+                                bandNo: bandNoForTrade
                             );
                         }
                     }
+
+                    // ✅ 그 다음에 RichTextBox 렌더
+                    OnTickArrived(priceInt);
                 }
                 catch { }
             }));
         }
-
         private void OnTickArrived(int price)
         {
             현재가변수 = price;
+
             if (!_recent.Contains(price))
                 _recent.Add(price);
 
@@ -876,7 +883,14 @@ namespace Exercise_1
                 .Where(p => p % 10 == 0 && p != price)
                 .ToArray();
 
-            try { _rtbBands?.RenderDesc(price, prevValues); } catch { }
+            try
+            {
+                // ✅ 거래밴드 문자열(옵션2)
+                string tradeText = (_tickCalc2 != null) ? _tickCalc2.TradeBandsPassedText : "(없음)";
+
+                _rtbBands?.RenderDesc(price, prevValues, tradeText);
+            }
+            catch { }
         }
 
         private void OnKodexQtyUpdated(int band, long qty)
