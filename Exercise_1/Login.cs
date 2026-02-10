@@ -1,13 +1,13 @@
 ﻿//1120
 //만일 현재값이 band값의 팔가격을 상향으로넘는다면
 //리스트박스에 있는 틱max를  textBox3 에 넣어줘
-//textboxbox2 를 채워줘 식은 textbox3 - textbox1
+//textbox2 를 채워줘 식은 textBox3 - textBox1
 //textbox7, textbox4에 0값 assign
 //
-//만일 현재값이 만일 band값의 살가격을 하향으로 넘는다면
+//만일 현재값이 band값의 살가격을 하향으로 넘는다면
 //리스트박스에 있는 틱min를  textBox7 에 넣어줘
-//textbox4 를 채워줘 식은 textbox7 - textbox3
-//textbox3, textbox3에 0값 assign
+//textbox4 를 채워줘 식은 textBox1 - textBox7   (현재가 - 틱Min)
+//textbox3, textbox2에 0값 assign
 
 // Login.cs (복붙용 / C# 7.3)  [static 방식 통일: 0001 선택 + 0050 Apply]
 // ------------------------------------------------------------
@@ -91,7 +91,7 @@ namespace Exercise_1
         public static string JMAuth = "1908hanjm!!";
         public static string Actno_Real = "00511723753";
 
-        // ✅ 계좌비번(4자리)
+        // ✅ 계좌비번(4자리) - REAL용(기본)
         public static string JMpass = "1908";
 
         public static int 꺽임변수 = 100;
@@ -100,7 +100,7 @@ namespace Exercise_1
         public static string Actno => _0050_Real_Test환경결정.Account ?? "";
 
         // ✅ 신형 모듈(static)
-        public static _0550_매매전송후대기 TradeWait;
+        public static _0550_부분체결확인 TradeWait;
         public static _0600_주문번호_매핑 OrdMap;
         public static _0650_SC1_수신처리 Sc1Receiver;
         public static _0700_매매후update AfterFillUpdate70;
@@ -150,6 +150,7 @@ namespace Exercise_1
         private double _currentCash = 0;
         private double _currentD2Estimate = 0;
         private double _todayRealizedPnl = 0;
+        private _1000_현금주문가능금액 _cashQuery;
 
         private readonly IBrokerClient _broker;
         private DbFuncs _dbFuncs;
@@ -271,11 +272,13 @@ namespace Exercise_1
 
             // ✅ Shown은 1개만: 기동 부트스트랩(0001 + 0050 Apply + DB reload + REAL/TEST 분기)
             this.Shown += Login_Shown_Bootstrap;
+
+            _cashQuery = new _1000_현금주문가능금액();
         }
 
         private void EnsureCoreModulesInitialized()
         {
-            if (TradeWait == null) TradeWait = new _0550_매매전송후대기();
+            if (TradeWait == null) TradeWait = new _0550_부분체결확인();
             if (OrdMap == null) OrdMap = new _0600_주문번호_매핑();
             if (Sc1Receiver == null) Sc1Receiver = new _0650_SC1_수신처리();
             if (AfterFillUpdate70 == null) AfterFillUpdate70 = new _0700_매매후update(this);
@@ -306,6 +309,14 @@ namespace Exercise_1
 
             // ✅ 초기 상태 표시
             SetPanel2Color(Color.LightGray);
+            try
+            {
+                string exePath = Application.ExecutablePath;
+                exePath = exePath.Replace("C:\\c#/", "");
+                exePath = exePath.Replace("/Exercise_1/bin/Debug/Exercise_1.exe", "");
+                label9.Text = exePath;
+            }
+            catch { }
         }
 
         // ─────────────────────────────────────────────
@@ -381,9 +392,10 @@ namespace Exercise_1
         }
 
         // ─────────────────────────────────────────────
-        // ✅ TEST 시작(실시간 XING 접속 금지)
+        // ✅ TEST 시작(모의서버 로그인 + 주문 가능 + ✅실시간 틱(XAReal)도 REAL처럼 수신)
+        // - 핵심: TEST에서도 _tickFromXing.Start(currentShcode)를 호출해야 RichTextBox에 쌓임
+        // - DB replay(_tickFromDb)는 기본 STOP 유지(사용자가 button8로 시작)
         // ─────────────────────────────────────────────
-        // StartTestMode()를 "모의서버 로그인 + 주문 가능" 버전으로 교체
         private async void StartTestMode()
         {
             try
@@ -411,7 +423,6 @@ namespace Exercise_1
                 );
 
                 // ✅ 중요: ConnectAsync 내부가 "TEST면 모의서버"로 붙도록 되어 있어야 합니다.
-                // (그게 아니라면 _0100_Xing_connect 쪽에서 서버 선택 로직을 넣어야 합니다.)
                 _mmXing = await _xingConn.ConnectAsync(currentShcode);
                 if (_mmXing == null)
                 {
@@ -426,13 +437,38 @@ namespace Exercise_1
                 TryStartSc1ReceiverOnce();
                 SubscribeSc1FilledOnce();
 
-                // ✅ Exec 생성 (이게 없어서 Exec null이 났던 겁니다)
+                // ✅ Exec 생성
                 _exec = new 매매실행(_mmXing, () => currentShcode);
                 _exec.Log += s => Debug.WriteLine("[매매실행][TEST] " + s);
 
-                // ✅ 실시간 틱은 원하면 계속 막아도 됨(= DB replay만 사용)
-                try { _tickFromXing?.Stop(); } catch { }
+                // =========================================================
+                // ✅ TEST도 REAL처럼: 실시간 틱 수신 시작 (XAReal: S3_/K3_)
+                // - DB replay는 기본 STOP 유지
+                // =========================================================
                 try { _tickFromDb?.Stop(); } catch { } // 사용자가 button8로 시작하니까 기본 stop 유지
+
+                try
+                {
+                    if (_tickFromXing == null)
+                    {
+                        Console.WriteLine("[BOOT][TEST] _tickFromXing is NULL (0230 not created) -> EnsureCoreModulesInitialized() 확인 필요");
+                    }
+                    else
+                    {
+                        // 혹시 남아있으면 정리 후 시작
+                        try { _tickFromXing.Stop(); } catch { }
+
+                        Console.WriteLine("[BOOT][TEST] calling _tickFromXing.Start now...");
+                        _tickFromXing.Start(currentShcode);
+
+                        UpdateStatus($"[TEST] 실시간 틱 시작: {currentShcode}  {_0050_Real_Test환경결정.LogPrefix}");
+                        Console.WriteLine($"[BOOT][TEST] TickFromXing.Start called shcode='{currentShcode}'");
+                    }
+                }
+                catch (Exception exTick)
+                {
+                    Console.WriteLine("[BOOT][TEST] TickFromXing.Start EX: " + exTick);
+                }
 
                 UpdateStatus($"TEST(모의서버) 준비 완료  {_0050_Real_Test환경결정.LogPrefix}  DB={DbPath}");
                 SetPanel2Color(Color.LightSkyBlue);
@@ -445,12 +481,28 @@ namespace Exercise_1
                 SetPanel2Color(Color.Red);
                 Console.WriteLine("[BOOT][TEST] EX: " + ex);
             }
-        }
-        // 2026-02-03 64192
 
+            // ✅ TEST에서도 부팅 시 당일 주문/미체결 조회하여 listView3 채우기
+            try
+            {
+                await Lv3Manager.ReloadAsync(
+                    owner: this,
+                    lv: listView3,
+                    orderSvc: _orderSvc,
+                    getActNo: () => Actno,
+                    getPwd: () => JMpass,
+                    getShcode: () => currentShcode
+                );
+                Console.WriteLine("[BOOT][TEST] Lv3Manager.ReloadAsync DONE");
+            }
+            catch (Exception exLv3)
+            {
+                Console.WriteLine("[BOOT][TEST] Lv3Manager.ReloadAsync FAIL: " + exLv3.Message);
+            }
+        }
 
         // ─────────────────────────────────────────────
-        // ✅ REAL 시작 (기존 Login_Shown_Async의 자동접속 흐름을 여기로 이동)
+        // ✅ REAL 시작
         // ─────────────────────────────────────────────
         private async Task StartRealMode_Async()
         {
@@ -958,18 +1010,63 @@ namespace Exercise_1
         private void OnOrderAccepted_OnLoop(OrderAck ack)
         {
             if (!IsHandleCreated) return;
+            if (ack == null) return;
 
             BeginInvoke(new Action(async () =>
             {
                 try
                 {
-                    Debug.WriteLine($"[ACCEPT] {ack?.OrderNo} {ack?.Message}");
+                    // OrdNo만 사용 (OrderAck에 SideKor/Band/OrderQty가 없으므로)
+                    var ordNoRaw = (ack.OrderNo ?? "").Trim();
+
+                    Debug.WriteLine($"[주문전송확인] OrdNo={ordNoRaw} Msg={ack.Message}");
+
+                    long ordNo;
+                    if (!long.TryParse(ordNoRaw, out ordNo) || ordNo <= 0)
+                    {
+                        Debug.WriteLine("[주문전송확인][ERROR] OrdNo parse fail -> TradeWait/OrdMap skip");
+                        return;
+                    }
+
+                    // ✅ 0550(잠금)에 저장된 side/band/qty를 그대로 사용
+                    var gate = Login.TradeWait;
+                    if (gate == null)
+                    {
+                        Debug.WriteLine("[주문전송확인][WARN] Login.TradeWait is null");
+                    }
+                    else
+                    {
+                        // (A안 핵심) OrdNo를 잠금에 묶어준다
+                        gate.MarkAccepted(
+                            ordNo: ordNo,
+                            orderQty: gate.LockedOrderQty,
+                            sideKor: gate.LockedSide,
+                            band: gate.LockedBand
+                        );
+                    }
+
+                    // ✅ 0600 등록
+                    var map = Login.OrdMap;
+                    if (map == null)
+                    {
+                        Debug.WriteLine("[주문전송확인][WARN] Login.OrdMap is null");
+                    }
+                    else
+                    {
+                        string side = (gate != null) ? gate.LockedSide : "";
+                        int band = (gate != null) ? gate.LockedBand : 0;
+                        int qty = (gate != null) ? gate.LockedOrderQty : 0;
+
+                        map.Register(sideKor: side, band: band, ordNo: ordNo, orderQty: qty);
+                    }
+
+                    // 기존 UI 갱신 유지
                     if (_lv3Manager != null)
                         await _lv3Manager.ReloadAsync();
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine("[OnOrderAccepted_OnLoop] " + ex.Message);
+                    Debug.WriteLine("[OnOrderAccepted_OnLoop][EX] " + ex);
                 }
             }));
         }
@@ -1032,6 +1129,7 @@ namespace Exercise_1
             }
             catch { }
         }
+
         private async void button3_Click(object sender, EventArgs e)
         {
             // =========================================================
@@ -1161,9 +1259,6 @@ namespace Exercise_1
 
             try { _tickCalc2?.Clear(); } catch { }
         }
-        // 2026-02-03 81742
-
-
 
         private void button4_Click(object sender, EventArgs e)
         {
@@ -1375,7 +1470,46 @@ namespace Exercise_1
                 base.Dispose(disposing);
             }
         }
+
+        private void button7_Click(object sender, EventArgs e)
+        {
+            // 계좌번호: 0050에서 확정된 값을 사용
+            string acnt = (Actno ?? "").Trim();
+
+            // 계좌비번: REAL=Login.JMpass, TEST=0050 쪽(현재 코드에서는 CertPw를 TEST 비번으로 사용)
+            string pwd = "";
+            try
+            {
+                if (_0050_Real_Test환경결정.IsTest)
+                    pwd = (_0050_Real_Test환경결정.CertPw ?? "").Trim();  // ✅ TEST 비번(0050)
+                else
+                    pwd = (JMpass ?? "").Trim();                            // ✅ REAL 비번(Login.cs)
+            }
+            catch
+            {
+                // fallback: 그래도 REAL 기본
+                pwd = (JMpass ?? "").Trim();
+            }
+
+            MessageBox.Show(
+                this,
+                $"Actno='{acnt}'\r\nPwd='{pwd}'\r\nMode={(_0050_Real_Test환경결정.IsTest ? "TEST" : "REAL")}",
+                "button7 DEBUG",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information
+            );
+
+            _cashQuery.Request(acnt, pwd);
+        }
     }
 }
 
-// 2026-02-01 73918
+// 2026-02-10 46837
+//h 2026-02-01 73918
+//h// ✅ REAL 기본값(기존 변수는 유지하되, 실제 사용은 0050에서만)
+//hpublic static string JMid = "cds002";
+//hpublic static string JMAuth = "1908hanjm!!";
+//hpublic static string Actno_Real = "00511723753";
+
+//h// ✅ 계좌비번(4자리)
+//hpublic static string JMpass = "1908";

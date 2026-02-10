@@ -60,6 +60,7 @@
             this.checkBox1 = new System.Windows.Forms.CheckBox();
             this.radioButton1 = new System.Windows.Forms.RadioButton();
             this.radioButton2 = new System.Windows.Forms.RadioButton();
+            this.button7 = new System.Windows.Forms.Button();
             this.panel3.SuspendLayout();
             this.panel2.SuspendLayout();
             this.panel4.SuspendLayout();
@@ -352,7 +353,7 @@
             // 
             this.button3.Location = new System.Drawing.Point(678, 398);
             this.button3.Name = "button3";
-            this.button3.Size = new System.Drawing.Size(199, 83);
+            this.button3.Size = new System.Drawing.Size(199, 29);
             this.button3.TabIndex = 33;
             this.button3.Text = "b3";
             this.button3.UseVisualStyleBackColor = true;
@@ -412,10 +413,21 @@
             this.radioButton2.Text = "Test";
             this.radioButton2.UseVisualStyleBackColor = true;
             // 
+            // button7
+            // 
+            this.button7.Location = new System.Drawing.Point(678, 433);
+            this.button7.Name = "button7";
+            this.button7.Size = new System.Drawing.Size(199, 31);
+            this.button7.TabIndex = 39;
+            this.button7.Text = "b7-현금주문가능금액";
+            this.button7.UseVisualStyleBackColor = true;
+            this.button7.Click += new System.EventHandler(this.button7_Click);
+            // 
             // Login
             // 
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
             this.ClientSize = new System.Drawing.Size(1432, 754);
+            this.Controls.Add(this.button7);
             this.Controls.Add(this.radioButton2);
             this.Controls.Add(this.radioButton1);
             this.Controls.Add(this.checkBox1);
@@ -478,5 +490,6 @@
         private System.Windows.Forms.Label label4;
         private System.Windows.Forms.RadioButton radioButton1;
         private System.Windows.Forms.RadioButton radioButton2;
+        private System.Windows.Forms.Button button7;
     }
 }

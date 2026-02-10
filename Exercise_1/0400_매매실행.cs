@@ -49,7 +49,7 @@ namespace Exercise_1
             if (Login.TradeWait == null)
                 throw new InvalidOperationException("Login.TradeWait(0550)가 null 입니다.");
 
-            if (!Login.TradeWait.TryBegin(side, band, (long)price, out reason))
+            if (!Login.TradeWait.TryBegin(side, band, (long)qty, (long)price, out reason))
             {
                 WriteLog($"[주문차단(0550)] side={side}, band={band}, reason={reason}");
                 return;

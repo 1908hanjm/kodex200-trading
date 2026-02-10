@@ -26,6 +26,8 @@ namespace Exercise_1
 
         public void Start(string shcode)
         {
+            Console.WriteLine("[BOOT][TEST] calling TickFeed.Start now...");
+            // _tickFromXing.Start("069500");
             EnsureNotDisposed();
 
             if (_started) Stop();
@@ -57,6 +59,8 @@ namespace Exercise_1
 
         private void HandleTick(Tick t)
         {
+            // Console.WriteLine($"[0230] Tick received price={t.Price} time={DateTime.Now:HH:mm:ss.fff}");
+
             try { OnTick?.Invoke(t); } catch (Exception ex) { WriteLog("[XING-TICK] OnTick handler error: " + ex.Message); }
             try { OnPrice?.Invoke(t.Price); } catch (Exception ex) { WriteLog("[XING-TICK] OnPrice handler error: " + ex.Message); }
         }

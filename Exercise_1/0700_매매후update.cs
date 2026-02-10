@@ -1,12 +1,9 @@
-﻿// 0700_매매후update.cs  (복붙용 / C# 7.3)
+﻿// 0700_매매후update.cs  (복붙용 / C# 7.3)  [✅LV3 컬럼/타이틀 보호]
 // ------------------------------------------------------------
-// 역할:
-// - 체결 후 BandList + DB qty 반영
-// - 시작밴드 재계산 + Login.시작밴드변수 갱신
-// - 매수 체결은 band+1 Qty 반영
-// - 거래 후 0250 결정엔진 Reset
-// - richTextBox Clear → 새 밴드 기준 재렌더
-// - ✅ listView1/listView3 갱신: DB 직접 로드(확정)
+// ✅ 이번 수정 핵심:
+// - DB Reload는 listView1(밴드표)만 수행한다.
+// - listView3(주문/체결 목록)는 0700에서 절대 Clear/Columns 재구성하지 않는다.
+//   -> listView3 타이틀이 band/팔가격/... 로 변하는 문제 완전 차단
 // ------------------------------------------------------------
 
 using System;
@@ -60,10 +57,9 @@ namespace Exercise_1
 
                 Console.WriteLine($"[0700] StartBand {oldStart} -> {newStart}");
 
-                // ✅ 순서: Reset → Render → ListView DB Reload
                 TryResetDecisionEngine_MUST_BE_LAST(side);
                 TryRenderBandsLikeBefore_MUST_BE_LAST(price);
-                TryReloadListViews_MUST_BE_LAST(); // ✅ DB 직접 로드 버전
+                TryReloadListViews_MUST_BE_LAST(); // ✅ LV1만
             }
             catch (Exception ex)
             {
@@ -71,9 +67,6 @@ namespace Exercise_1
             }
         }
 
-        // ─────────────────────────────────────────────
-        // 거래 후 결정엔진 Reset
-        // ─────────────────────────────────────────────
         private void TryResetDecisionEngine_MUST_BE_LAST(string sideKor)
         {
             if (!_login.IsHandleCreated) return;
@@ -101,9 +94,6 @@ namespace Exercise_1
             }));
         }
 
-        // ─────────────────────────────────────────────
-        // richTextBox Clear → 새 밴드 기준 재렌더
-        // ─────────────────────────────────────────────
         private void TryRenderBandsLikeBefore_MUST_BE_LAST(double price)
         {
             if (!_login.IsHandleCreated) return;
@@ -115,21 +105,17 @@ namespace Exercise_1
             {
                 try
                 {
-                    // ✅ richTextBox1.Clear()
                     var rtbField = typeof(Login).GetField("richTextBox1",
                         BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
                     var rtb = rtbField?.GetValue(_login) as RichTextBox;
                     rtb?.Clear();
 
-                    // ✅ _recent.Clear()
                     var recentField = typeof(Login).GetField("_recent", BindingFlags.Instance | BindingFlags.NonPublic);
                     (recentField?.GetValue(_login) as System.Collections.IList)?.Clear();
 
-                    // ✅ last price reset
                     var lastField = typeof(Login).GetField("_lastUiTickPrice", BindingFlags.Instance | BindingFlags.NonPublic);
                     lastField?.SetValue(_login, double.NaN);
 
-                    // 기존 렌더 호출
                     var mi = typeof(Login).GetMethod("OnTickArrived", BindingFlags.Instance | BindingFlags.NonPublic);
                     mi?.Invoke(_login, new object[] { p });
 
@@ -142,11 +128,6 @@ namespace Exercise_1
             }));
         }
 
-        // ─────────────────────────────────────────────
-        // ✅ listView1 / listView3 DB 직접 로드로 강제 갱신
-        // - Login의 로더 메서드 이름에 의존하지 않음 (확정)
-        // - kodex200_new를 직접 SELECT 해서 렌더
-        // ─────────────────────────────────────────────
         private void TryReloadListViews_MUST_BE_LAST()
         {
             if (!_login.IsHandleCreated) return;
@@ -156,12 +137,11 @@ namespace Exercise_1
                 try
                 {
                     var lv1 = GetListViewByFieldName("listView1");
-                    var lv3 = GetListViewByFieldName("listView3");
+                    var lv3 = GetListViewByFieldName("listView3"); // ✅ 존재 확인만 (건드리지 않음)
 
-                    // DB에서 밴드 목록 읽기
                     var rows = LoadBandsFromDb_kodex200_new();
 
-                    bool ok1 = false, ok3 = false;
+                    bool ok1 = false;
 
                     if (lv1 != null)
                     {
@@ -169,13 +149,11 @@ namespace Exercise_1
                         ok1 = true;
                     }
 
-                    if (lv3 != null)
-                    {
-                        RenderBandsToListView(lv3, rows);
-                        ok3 = true;
-                    }
+                    // ✅ 핵심: LV3는 절대 Clear/Columns 재구성하지 않는다.
+                    // - listView3는 주문/체결 목록용이므로 헤더가 바뀌면 안 된다.
+                    bool lv3Exists = (lv3 != null);
 
-                    Console.WriteLine($"[0700][LV] Reload(DB) OK lv1={ok1} lv3={ok3} rows={rows.Count}");
+                    Console.WriteLine($"[0700][LV] Reload(DB) OK lv1={ok1} lv3(untouched)={lv3Exists} rows={rows.Count}");
                 }
                 catch (Exception ex)
                 {
@@ -194,7 +172,6 @@ namespace Exercise_1
             catch { return null; }
         }
 
-        // DB row model
         private sealed class BandRow
         {
             public int Band;
@@ -214,7 +191,6 @@ namespace Exercise_1
                 conn.Open();
                 using (var cmd = conn.CreateCommand())
                 {
-                    // ⚠️ 컬럼명은 당신 DB 기준: band, 팔가격, 산가격, 살가격, qty, sina
                     cmd.CommandText =
                         "SELECT band, 팔가격, 산가격, 살가격, qty, sina " +
                         "FROM kodex200_new " +
@@ -294,7 +270,6 @@ namespace Exercise_1
                     lv.Items.Add(it);
                 }
 
-                // (선택) 시작밴드 하이라이트: qty>0 중 band 최대
                 try
                 {
                     int startBand = Login.시작밴드변수;
@@ -303,8 +278,7 @@ namespace Exercise_1
                         foreach (ListViewItem it2 in lv.Items)
                         {
                             if (it2 == null) continue;
-                            int b;
-                            if (int.TryParse(it2.Text, out b) && b == startBand)
+                            if (int.TryParse(it2.Text, out int b) && b == startBand)
                             {
                                 it2.Selected = true;
                                 it2.Focused = true;
@@ -346,6 +320,8 @@ namespace Exercise_1
                 .DefaultIfEmpty(0)
                 .Max();
         }
+
+        // 2026-02-09 12480
     }
 }
-//2026-01-27 61408
+// 2026-02-09 50733

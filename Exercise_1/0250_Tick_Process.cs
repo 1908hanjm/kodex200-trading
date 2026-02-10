@@ -24,6 +24,11 @@
 // ✅ 이번 수정(필수):
 // - FIRE 시 밴드별로 0300을 N번 부르지 않는다.
 // - 0300에 "배치 실행"을 1번만 호출하여, 0300 내부에서 순차 전송하도록 한다.
+//
+// ✅ 이번 수정(철학 반영 핵심):
+// - 세션 진행 중, 가격이 "LastBreakBand 기준"으로 다시 밴드 범위(IN-BAND)로 복귀하면
+//   => 그 돌파 시도를 접고(세션 종료), 상태를 즉시 초기화한다.
+//   (textbox 2/3/4/7 = 0 처리는 0270(UpdateByBand)가 IN-BAND에서 이미 수행 중)
 // ------------------------------------------------------------
 
 using System;
@@ -144,6 +149,27 @@ namespace Exercise_1
 
                 long segMax = _segMax;
                 long segMin = _segMin;
+
+                // ─────────────────────────────────────────────
+                // 4.5) (철학 반영) "LastBreakBand 기준" IN-BAND 복귀 시 세션 종료
+                //  - 세션은 밴드 OUT 상태에서만 의미가 있다.
+                //  - 다시 밴드 범위로 들어오면(OUT이 아니면) 그 돌파 시도를 접고 초기화.
+                //  - textbox 0 세팅은 0270이 IN-BAND에서 이미 수행한다.
+                // ─────────────────────────────────────────────
+                int lastBreakBandForReturn = ComputeLastBreakBandByExtrema(_돌파방향, _돌파밴드K, segMin, segMax);
+                var lastBandForReturn = GetBandByNo(lastBreakBandForReturn);
+                if (lastBandForReturn != null)
+                {
+                    bool returnedToInBandByLast =
+                        (_돌파방향 == 돌파방향.매도 && cur <= lastBandForReturn.팔가격) ||
+                        (_돌파방향 == 돌파방향.매수 && cur >= lastBandForReturn.살가격);
+
+                    if (returnedToInBandByLast)
+                    {
+                        ResetAfterAbort($"INBAND_RETURN lastBand={lastBreakBandForReturn} cur={cur}");
+                        return;
+                    }
+                }
 
                 // ─────────────────────────────────────────────
                 // 5) 꺾임 판정 (세션에서만)
@@ -267,13 +293,20 @@ namespace Exercise_1
             // 방향표시도 세션 시작에서는 prev 갱신
             _prevPrice = cur;
             _hasPrev = true;
+
+            Debug.WriteLine($"[0250] StartBreakSession dir={dir} K={startBandNow} cur={cur}");
         }
 
         // ─────────────────────────────────────────────
-        // LastBreakBand 계산 (BUY 중심)
+        // LastBreakBand 계산 (BUY/SELL 대칭)
+        //  - 밴드 번호 규칙: 번호 증가 = 가격 하락
+        //  - BUY(하락): segMin이 더 내려가면(살가격 아래) lastBand는 번호 증가 방향으로 확장
+        //  - SELL(상승): segMax가 더 올라가면(팔가격 위) lastBand는 번호 감소 방향으로 확장
         // ─────────────────────────────────────────────
         private int ComputeLastBreakBandByExtrema(돌파방향 dir, int startBandK, long segMin, long segMax)
         {
+            if (startBandK <= 0) return startBandK;
+
             if (dir == 돌파방향.매수)
             {
                 int last = startBandK;
@@ -293,13 +326,31 @@ namespace Exercise_1
 
                 return last;
             }
+            else if (dir == 돌파방향.매도)
+            {
+                int last = startBandK;
 
-            // 매도 방향은 별도 정의 필요(현재는 보수적으로 startBandK)
+                // startBandK부터 위(번호 감소)로 스캔 (상승 돌파는 band 번호가 작아지는 방향)
+                for (int b = startBandK; b >= 1; b--)
+                {
+                    var br = GetBandByNo(b);
+                    if (br == null) break;
+
+                    // segMax가 해당 밴드의 팔가격 위로 올라간 상태면 그 밴드는 "돌파된 상태"로 본다
+                    if (segMax > br.팔가격)
+                        last = b;
+                    else
+                        break;
+                }
+
+                return last;
+            }
+
             return startBandK;
         }
 
         // ─────────────────────────────────────────────
-        // Reset
+        // Reset (정상 체결 후)
         // ─────────────────────────────────────────────
         private void ResetAfterTrade(string why)
         {
@@ -318,6 +369,29 @@ namespace Exercise_1
             _prevPrice = 0;
 
             Debug.WriteLine($"[0250] ResetAfterTrade ({why})");
+        }
+
+        // ─────────────────────────────────────────────
+        // Reset (철학 반영: IN-BAND 복귀 등으로 세션 포기)
+        // - UI textbox 0 세팅은 0270이 IN-BAND에서 이미 수행하므로 여기서는 "세션 상태"만 정리
+        // ─────────────────────────────────────────────
+        private void ResetAfterAbort(string why)
+        {
+            _tickList.Clear();
+            _tickSet.Clear();
+
+            _돌파방향 = 돌파방향.없음;
+            _돌파밴드K = 0;
+            _startBandAtBreak = 0;
+            _breakIndex = 0;
+
+            _segMax = 0;
+            _segMin = 0;
+
+            _hasPrev = false;
+            _prevPrice = 0;
+
+            Debug.WriteLine($"[0250] ResetAfterAbort ({why})");
         }
 
         // ─────────────────────────────────────────────
@@ -373,4 +447,4 @@ namespace Exercise_1
         }
     }
 }
-// 2026-02-03 48219
+// 2026-02-09 73914

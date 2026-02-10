@@ -1,28 +1,15 @@
 ﻿// 0300_밴드매칭.cs  (복붙용 / C# 7.3)
 // ------------------------------------------------------------
 // 역할:
-// - Tick_Process(0250)가 전달한 FIRE 정보를 "거래 요청"으로 변환
-// - ✅ 이번 수정(핵심): "배치 실행"을 도입하여, 한 FIRE에 대해 0300은 1번만 호출된다.
-//   - 배치 내부에서 밴드별 주문을 "순차"로 전송한다.
-//   - 배치 실행 중에는 다른 배치 실행을 전부 차단한다(전역 1건 제한).
+// - Tick_Process(0250)가 전달한 FIRE(range)를 "체인(Queue) 주문"으로 변환
 //
-// - ✅ 실제 주문 전송: LoginFormAccessor.TryGetExec() → 매매실행.ExecuteAsync()
-//
-// BUY 규칙(확정):
-// - BUY FIRE가 밴드 K에서 발생하면
-//      주문수량 = band K의 Sina
-//      체결 후 Qty 반영 = band (K+1)  (0700에서 처리)
-//
-// SELL 규칙(현재 유지):
-// - SELL 수량은 해당 밴드 Qty
-//
-// 주의:
-// - "배치"는 큐가 아니라, from~to 범위를 한 Task에서 for로 순차 실행하는 구조다.
-// - 0550은 여전히 side:band 단위로 중복 방지/대기 상태를 관리한다.
-// - 배치 차단은 0300에서 별도 전역 게이트로 처리한다.
+// ✅ 추가(이번 요청 핵심):
+// - 체인 종료 시점(QueueEmpty/SendFail/EX 등)에서 "ChainFinished" 이벤트를 1회 발생
+//   -> Login이 listView3를 딱 1번만 Refresh 하도록 연결 가능
 // ------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
@@ -36,12 +23,41 @@ namespace Exercise_1
         private const string SIDE_BUY = "BUY";
         private const string SIDE_SELL = "SELL";
 
-        // ✅ 전역 배치 게이트(동시 배치 실행 완전 차단)
-        private static readonly SemaphoreSlim _batchGate = new SemaphoreSlim(1, 1);
+        // ✅ 체인 게이트(동시 체인 실행 완전 차단)
+        private static readonly SemaphoreSlim _chainGate = new SemaphoreSlim(1, 1);
+
+        private static readonly object _qLock = new object();
+        private static Queue<int> _bandQueue = new Queue<int>(16);
+
+        private static string _chainSide = "";
+        private static long _chainFirePrice = 0;
+
+        // (호환/로그용) 체인 시작 시점의 startBandNow
+        private static int _chainStartBandAtFire = 0;
+
+        private static bool _chainActive = false;
+        private static int _inFlightBand = 0; // 현재 전송(진행) 중 밴드
+
+        // ✅ inFlight SEND 완료 추적(레이스 방지)
+        private static TaskCompletionSource<bool> _inFlightSendDoneTcs = null;
+        private static int _inFlightSendBand = 0; // 이 TCS가 의미하는 band
+        private static long _sendSeq = 0;         // 디버그/안전용
+
+        // ✅ 체인 종료 이벤트(1회)
+        // reason: QueueEmpty / SendFail / ExecNull / EX ...
+        // side: BUY/SELL, firePrice: 마지막 체인의 firePrice
+        public static event Action<string, string, long> ChainFinished;
+
+        public static bool IsChainActive
+        {
+            get
+            {
+                lock (_qLock) { return _chainActive; }
+            }
+        }
 
         /// <summary>
-        /// (구버전 호환용) 단일 밴드 실행 엔트리
-        /// - 이제 0250에서는 사용하지 말고, 실행배치()만 호출하는 것을 권장한다.
+        /// (구버전 호환) 단일 밴드 실행 엔트리
         /// </summary>
         public static void 실행(string side, long firePrice, int endBand, int startBand)
         {
@@ -59,21 +75,26 @@ namespace Exercise_1
                 return;
             }
 
-            // 구버전도 내부적으로 배치로 한번 감싸서 "전역 차단 + 순차"를 유지
+            // ✅ 호환: startBandNow를 startBand로 넘김
             실행배치(side, firePrice, startBand, endBand, startBandNow: startBand);
         }
 
-        /// <summary>
-        /// ✅ NEW: 배치 실행 (핵심)
-        /// - side: "BUY" or "SELL"
-        /// - fromBand/toBand: BUY는 from<=to (오름차순), SELL은 from>=to (내림차순)
-        /// - startBandNow: 호출 시점의 시작밴드(로그 표기용)
-        /// </summary>
+        // =========================================================
+        // ✅ 실행배치 오버로드(호환 유지)
+        // =========================================================
+
+        public static void 실행배치(string side, long firePrice, int fromBand, int toBand)
+        {
+            int sb = 0;
+            try { sb = Login.시작밴드변수; } catch { sb = 0; }
+            실행배치(side, firePrice, fromBand, toBand, startBandNow: sb);
+        }
+
         public static void 실행배치(string side, long firePrice, int fromBand, int toBand, int startBandNow)
         {
             if (string.IsNullOrWhiteSpace(side))
             {
-                Debug.WriteLine("[0300.BATCH] side null/empty");
+                Debug.WriteLine("[0300] side null/empty");
                 return;
             }
 
@@ -81,115 +102,104 @@ namespace Exercise_1
 
             if (Login.BandList == null || Login.BandList.Count == 0)
             {
-                Debug.WriteLine("[0300.BATCH] Login.BandList 비어 있음");
+                Console.WriteLine("[0300] Login.BandList 비어 있음 -> skip");
                 return;
             }
 
             if (fromBand <= 0 || toBand <= 0)
             {
-                Debug.WriteLine($"[0300.BATCH] invalid band range from={fromBand} to={toBand}");
+                Console.WriteLine($"[0300] invalid range from={fromBand} to={toBand}");
                 return;
             }
 
-            // Exec 확보
-            var exec = LoginFormAccessor.TryGetExec();
-            if (exec == null)
+            bool isBuy = (side == SIDE_BUY);
+            bool isSell = (side == SIDE_SELL);
+            if (!isBuy && !isSell)
             {
-                Console.WriteLine("[0300.BATCH] Exec is null (Login.Exec not ready) -> skip send");
+                Console.WriteLine($"[0300] Unknown side='{side}'");
                 return;
             }
 
-            // 배치 작업을 1개 Task에서 순차 실행
+            if (isBuy && fromBand > toBand)
+            {
+                Console.WriteLine($"[0300] BUY range invalid from={fromBand} to={toBand}");
+                return;
+            }
+            if (isSell && fromBand < toBand)
+            {
+                Console.WriteLine($"[0300] SELL range invalid from={fromBand} to={toBand}");
+                return;
+            }
+
             Task.Run(async () =>
             {
-                // ✅ 전역 배치 게이트: 배치 중 다른 배치는 진입 불가
-                if (!await TryEnterBatchGateAsync().ConfigureAwait(false))
+                if (!await TryEnterChainGateAsync().ConfigureAwait(false))
                 {
-                    Console.WriteLine($"[0300.BATCH] SKIP (another batch running) side={side} range={fromBand}->{toBand} firePrice={firePrice:#,0}");
+                    Console.WriteLine($"[0300] SKIP (chain running) side={side} range={fromBand}~{toBand} firePrice={firePrice:#,0}");
                     return;
                 }
 
                 try
                 {
-                    bool isBuy = (side == SIDE_BUY);
-                    bool isSell = (side == SIDE_SELL);
-
-                    if (!isBuy && !isSell)
+                    var exec0 = LoginFormAccessor.TryGetExec();
+                    if (exec0 == null)
                     {
-                        Console.WriteLine($"[0300.BATCH] Unknown side='{side}'");
+                        Console.WriteLine("[0300] Exec is null -> chain abort");
+                        ForceStopChain("ExecNull");
                         return;
                     }
 
-                    // 방향/범위 검사
-                    if (isBuy && fromBand > toBand)
-                    {
-                        Console.WriteLine($"[0300.BATCH] BUY range invalid from={fromBand} to={toBand}");
-                        return;
-                    }
-                    if (isSell && fromBand < toBand)
-                    {
-                        Console.WriteLine($"[0300.BATCH] SELL range invalid from={fromBand} to={toBand}");
-                        return;
-                    }
+                    var bands = BuildBandsInOrder(isBuy, fromBand, toBand);
 
-                    // SEG 로그(배치 전체 1회)
-                    int lowerBand = Math.Min(fromBand, toBand);
-                    int upperBand = Math.Max(fromBand, toBand);
-
-                    int count = Login.BandList.Count(b => b != null && b.Band >= lowerBand && b.Band <= upperBand);
-
-                    Console.WriteLine(
-                        $"[밴드매칭.BATCH] side={side} count~={count} order={(isBuy ? "ASC" : "DESC")} range={lowerBand}~{upperBand} " +
-                        $"firePrice={firePrice:#,0} startBandNow={startBandNow}"
-                    );
-
-                    if (isBuy)
+                    lock (_qLock)
                     {
-                        // BUY: from -> to (ASC)
-                        for (int b = fromBand; b <= toBand; b++)
-                        {
-                            bool ok = await ExecuteBuy_OneAsync(exec, firePrice, decisionBandK: b, startBandNow: startBandNow).ConfigureAwait(false);
-                            if (!ok)
-                            {
-                                // 실패해도 다음 밴드 계속 진행(정책 선택)
-                                // 원하면 break로 바꿀 수 있음.
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // SELL: from -> to (DESC)
-                        for (int b = fromBand; b >= toBand; b--)
-                        {
-                            bool ok = await ExecuteSell_OneAsync(exec, firePrice, decisionBand: b, startBandNow: startBandNow).ConfigureAwait(false);
-                            if (!ok)
-                            {
-                                // 실패해도 다음 밴드 계속 진행
-                            }
-                        }
+                        _bandQueue.Clear();
+                        foreach (var b in bands) _bandQueue.Enqueue(b);
+
+                        _chainSide = side;
+                        _chainFirePrice = firePrice;
+                        _chainStartBandAtFire = startBandNow;
+
+                        _chainActive = true;
+                        _inFlightBand = 0;
+
+                        _inFlightSendDoneTcs = null;
+                        _inFlightSendBand = 0;
+
+                        Console.WriteLine($"[0300] RANGE={fromBand}~{toBand} -> Queue=[{string.Join(",", bands)}]");
                     }
 
-                    Console.WriteLine($"[밴드매칭.BATCH] DONE side={side} range={fromBand}->{toBand}");
+                    await SendNextOneAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("[0300.BATCH] EX " + ex);
-                }
-                finally
-                {
-                    try { _batchGate.Release(); } catch { }
+                    Console.WriteLine("[0300] EX: " + ex);
+                    ForceStopChain("EX");
                 }
             });
         }
 
-        private static async Task<bool> TryEnterBatchGateAsync()
+        private static List<int> BuildBandsInOrder(bool isBuy, int fromBand, int toBand)
+        {
+            var list = new List<int>(Math.Abs(toBand - fromBand) + 1);
+
+            if (isBuy)
+            {
+                for (int b = fromBand; b <= toBand; b++) list.Add(b);
+            }
+            else
+            {
+                for (int b = fromBand; b >= toBand; b--) list.Add(b);
+            }
+
+            return list;
+        }
+
+        private static async Task<bool> TryEnterChainGateAsync()
         {
             try
             {
-                // 즉시 진입 시도: 이미 배치 돌고 있으면 스킵
-                // (Wait(0) 대신 async 형태로 구현)
-                var entered = await _batchGate.WaitAsync(0).ConfigureAwait(false);
-                return entered;
+                return await _chainGate.WaitAsync(0).ConfigureAwait(false);
             }
             catch
             {
@@ -197,9 +207,181 @@ namespace Exercise_1
             }
         }
 
-        // ─────────────────────────────────────────────
-        // BUY 1건 (순차 전송)
-        // ─────────────────────────────────────────────
+        public static void OnTradeCompleted_ThenSendNextOrFinish(int completedBand)
+        {
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await WaitInFlightSendDoneIfNeededAsync(completedBand).ConfigureAwait(false);
+
+                    bool hasMore;
+                    lock (_qLock)
+                    {
+                        if (!_chainActive) return;
+
+                        _inFlightBand = 0;
+                        hasMore = _bandQueue.Count > 0;
+                    }
+
+                    if (hasMore)
+                    {
+                        await SendNextOneAsync().ConfigureAwait(false);
+                        return;
+                    }
+
+                    ForceStopChain("QueueEmpty");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[0300][CHAIN] OnTradeCompleted EX: " + ex);
+                    ForceStopChain("EX");
+                }
+            });
+        }
+
+        private static async Task WaitInFlightSendDoneIfNeededAsync(int completedBand)
+        {
+            Task waitTask = null;
+            int band = 0;
+            long seq = 0;
+
+            lock (_qLock)
+            {
+                if (!_chainActive) return;
+
+                if (_inFlightSendDoneTcs != null && _inFlightSendBand == completedBand)
+                {
+                    waitTask = _inFlightSendDoneTcs.Task;
+                    band = _inFlightSendBand;
+                    seq = _sendSeq;
+                }
+            }
+
+            if (waitTask == null) return;
+
+            var done = await Task.WhenAny(waitTask, Task.Delay(5000)).ConfigureAwait(false);
+            if (!object.ReferenceEquals(done, waitTask))
+            {
+                Console.WriteLine($"[0300][WARN] WaitInFlightSendDone TIMEOUT band={band} seq={seq} -> continue");
+            }
+        }
+
+        private static async Task SendNextOneAsync()
+        {
+            string side;
+            long firePrice;
+            int bandToSend;
+
+            long mySeq;
+            TaskCompletionSource<bool> myTcs;
+
+            lock (_qLock)
+            {
+                if (!_chainActive) return;
+
+                if (_bandQueue.Count <= 0)
+                {
+                    return;
+                }
+
+                side = _chainSide;
+                firePrice = _chainFirePrice;
+
+                bandToSend = _bandQueue.Dequeue();
+                _inFlightBand = bandToSend;
+
+                mySeq = ++_sendSeq;
+                myTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _inFlightSendDoneTcs = myTcs;
+                _inFlightSendBand = bandToSend;
+            }
+
+            var exec = LoginFormAccessor.TryGetExec();
+            if (exec == null)
+            {
+                Console.WriteLine("[0300] Exec is null -> chain abort");
+                CompleteInFlightSendDone(bandToSend, myTcs, success: false);
+                ForceStopChain("ExecNull");
+                return;
+            }
+
+            Console.WriteLine($"[0300] SEND band={bandToSend}");
+
+            bool ok;
+            try
+            {
+                int startBandNowFresh = 0;
+                try { startBandNowFresh = Login.시작밴드변수; } catch { startBandNowFresh = _chainStartBandAtFire; }
+
+                if (side == SIDE_BUY)
+                {
+                    ok = await ExecuteBuy_OneAsync(exec, firePrice, decisionBandK: bandToSend, startBandNow: startBandNowFresh).ConfigureAwait(false);
+                }
+                else
+                {
+                    ok = await ExecuteSell_OneAsync(exec, firePrice, decisionBand: bandToSend, startBandNow: startBandNowFresh).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[0300] SEND EX: " + ex);
+                ok = false;
+            }
+
+            CompleteInFlightSendDone(bandToSend, myTcs, ok);
+
+            if (!ok)
+            {
+                Console.WriteLine($"[0300] SEND FAIL band={bandToSend} -> chain abort");
+                ForceStopChain("SendFail");
+            }
+        }
+
+        private static void CompleteInFlightSendDone(int band, TaskCompletionSource<bool> tcs, bool success)
+        {
+            try { tcs.TrySetResult(success); } catch { }
+
+            lock (_qLock)
+            {
+                if (_inFlightSendDoneTcs == tcs && _inFlightSendBand == band)
+                {
+                    _inFlightSendDoneTcs = null;
+                    _inFlightSendBand = 0;
+                }
+            }
+        }
+
+        private static void ForceStopChain(string reason)
+        {
+            string side;
+            long firePrice;
+
+            lock (_qLock)
+            {
+                side = _chainSide;
+                firePrice = _chainFirePrice;
+
+                _bandQueue.Clear();
+                _chainSide = "";
+                _chainFirePrice = 0;
+                _chainStartBandAtFire = 0;
+
+                _chainActive = false;
+                _inFlightBand = 0;
+
+                try { _inFlightSendDoneTcs?.TrySetCanceled(); } catch { }
+                _inFlightSendDoneTcs = null;
+                _inFlightSendBand = 0;
+            }
+
+            try { _chainGate.Release(); } catch { }
+            Console.WriteLine($"[0300][CHAIN] STOP reason={reason}");
+
+            // ✅ 체인 종료 이벤트 1회
+            try { ChainFinished?.Invoke(reason, side, firePrice); } catch { }
+        }
+
         private static async Task<bool> ExecuteBuy_OneAsync(매매실행 exec, long firePrice, int decisionBandK, int startBandNow)
         {
             var k = GetBand(decisionBandK);
@@ -209,14 +391,14 @@ namespace Exercise_1
                 return false;
             }
 
-            long qty = k.Sina; // ✅ 합의: 수량은 K의 Sina
+            long qty = k.Sina;
             if (qty <= 0)
             {
                 Console.WriteLine($"[0300][BUY] SKIP K.Sina<=0  K={decisionBandK} Sina={qty}");
                 return false;
             }
 
-            int updateBand = decisionBandK + 1; // ✅ 합의: Qty 반영 밴드 = K+1 (체결 후)
+            int updateBand = decisionBandK + 1;
             var ub = GetBand(updateBand);
             if (ub == null)
             {
@@ -243,9 +425,6 @@ namespace Exercise_1
             }
         }
 
-        // ─────────────────────────────────────────────
-        // SELL 1건 (순차 전송)
-        // ─────────────────────────────────────────────
         private static async Task<bool> ExecuteSell_OneAsync(매매실행 exec, long firePrice, int decisionBand, int startBandNow)
         {
             var b = GetBand(decisionBand);
@@ -280,75 +459,10 @@ namespace Exercise_1
             }
         }
 
-        // ─────────────────────────────────────────────
-        // 유틸
-        // ─────────────────────────────────────────────
         private static BandRange GetBand(int band)
         {
             return Login.BandList.FirstOrDefault(x => x != null && x.Band == band);
         }
-
-        // (유지) 체결 후 반영 함수들은 0700이 처리하는 구조면 사실상 미사용이지만,
-        // 기존 호출/테스트 코드가 있을 수 있어 남겨둔다.
-
-        public static int ApplyFill_Buy(int decisionBandK, long filledQty)
-        {
-            if (filledQty <= 0) return GetStartBandFromBandList();
-
-            int updateBand = decisionBandK + 1;
-
-            var ub = GetBand(updateBand);
-            if (ub == null)
-            {
-                Debug.WriteLine($"[0300][FILL-BUY] updateBand not found. K={decisionBandK} => {updateBand}");
-                return GetStartBandFromBandList();
-            }
-
-            ub.Qty += filledQty;
-
-            int newStart = GetStartBandFromBandList();
-
-            Console.WriteLine(
-                $"[0300.FILL-BUY] K={decisionBandK} filledQty={filledQty:#,0} -> QtyBand(K+1)={updateBand} newQty={ub.Qty:#,0} newStartBand={newStart}"
-            );
-
-            return newStart;
-        }
-
-        public static int ApplyFill_Sell(int decisionBand, long filledQty)
-        {
-            if (filledQty <= 0) return GetStartBandFromBandList();
-
-            var b = GetBand(decisionBand);
-            if (b == null)
-            {
-                Debug.WriteLine($"[0300][FILL-SELL] band not found. band={decisionBand}");
-                return GetStartBandFromBandList();
-            }
-
-            long newQty = b.Qty - filledQty;
-            if (newQty < 0) newQty = 0;
-            b.Qty = newQty;
-
-            int newStart = GetStartBandFromBandList();
-
-            Console.WriteLine(
-                $"[0300.FILL-SELL] band={decisionBand} filledQty={filledQty:#,0} newQty={b.Qty:#,0} newStartBand={newStart}"
-            );
-
-            return newStart;
-        }
-
-        private static int GetStartBandFromBandList()
-        {
-            int max = 0;
-            foreach (var b in Login.BandList)
-            {
-                if (b == null) continue;
-                if (b.Qty > 0 && b.Band > max) max = b.Band;
-            }
-            return max;
-        }
     }
 }
-// 2026-02-03 73164
+// 2026-02-10 19755

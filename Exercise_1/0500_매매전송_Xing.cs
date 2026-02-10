@@ -1,21 +1,4 @@
 ﻿// 매매_Xing.cs  (복붙용 / C# 7.3 / 0550+0600 연동 / "주문전송확인" 통합 / SC1 제거 버전)
-// ------------------------------------------------------------
-// ✅ 구성(최종):
-// - 이 클래스는 "주문 전송 + 주문전송확인(OrdNo 확보)"까지만 담당한다.
-// - SC1 수신/파싱/체결 후처리는 0650_SC1_수신처리.cs + 0700_매매후update.cs가 담당한다.
-//
-// ✅ 연동(Static 스타일):
-// - Login.TradeWait : 0550_매매전송후대기 (pending-lock/실패시 해제)
-// - Login.OrdMap    : 0600_주문번호_매핑 (ordNo -> (side, band) 등록)
-//
-// ✅ 주문전송확인 규칙:
-// - CSPAT00600 ReceiveData에서 OrdNo(OutBlock2 우선, OutBlock1 fallback)를 trim 후
-//   - OrdNo 있으면: Login.OrdMap.Register(sideKor, band, ordNoTrim)
-//   - OrdNo 없으면: Login.TradeWait.OnOrderSendConfirmFailed(sideKor, band, "ORDNO_EMPTY")
-//
-// ✅ SC1 관련:
-// - StartSC1 / SetFieldData / SC1 ReceiveRealData 전부 제거 (0650에서 담당)
-// ------------------------------------------------------------
 
 using System;
 using System.Diagnostics;
@@ -26,24 +9,17 @@ using XA_DATASETLib;
 
 namespace Exercise_1
 {
-    /// <summary>
-    /// 실전 주문(CSPAT00600) + 주문전송확인(OrdNo 확보) 전담
-    /// </summary>
     public sealed class 매매_Xing : IDisposable
     {
         private readonly XAQueryClass _qOrder = new XAQueryClass();
-
         private const string RES_ORDER = @"C:\LS_SEC\xingAPI\Res\CSPAT00600.res";
 
-        // ✅ 주문 전송 동시성 제어(주문전송확인 섞임 방지)
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
 
-        // 계좌/비번/종목 제공자 (0100에서 주입)
         private readonly Func<string> _getAcntNo;
         private readonly Func<string> _getPwd4;
         private readonly Func<string> _getShcode;
 
-        // 마지막 주문 컨텍스트(ORDER MSG 실패 시 사용)
         private string _lastSideKor = "";
         private int _lastBand = 0;
 
@@ -61,11 +37,6 @@ namespace Exercise_1
             Write("[매매_Xing] 초기화 완료 (주문 전송 + 주문전송확인 / SC1 제거 버전)");
         }
 
-        /// <summary>
-        /// CSPAT00600 전송 + 주문전송확인(OrdNo 확보)
-        /// - sideKor: "매수" 또는 "매도"
-        /// - shcode : "069500" 또는 "A069500" 허용 (내부에서 A prefix 보정)
-        /// </summary>
         public async Task SendOrderLive(string sideKor, string shcode, double price, int qty, int band)
         {
             if (string.IsNullOrWhiteSpace(sideKor)) throw new ArgumentNullException(nameof(sideKor));
@@ -75,15 +46,13 @@ namespace Exercise_1
 
             sideKor = NormalizeSideKorOnly(sideKor);
 
-            // shcode 인자가 비어있으면 주입 Func에서 보충
             shcode = (shcode ?? "").Trim();
             if (string.IsNullOrEmpty(shcode))
                 shcode = (_getShcode() ?? "").Trim();
 
             if (string.IsNullOrEmpty(shcode))
-                throw new InvalidOperationException("shcode(종목코드)가 비었습니다. (SendOrderLive 인자 및 getShcode 모두 비어있음)");
+                throw new InvalidOperationException("shcode(종목코드)가 비었습니다.");
 
-            // bnsTpCode: 1=매도, 2=매수
             string bnsTpCode = (sideKor == "매도") ? "1" : "2";
 
             await _sendLock.WaitAsync().ConfigureAwait(false);
@@ -98,7 +67,6 @@ namespace Exercise_1
                 if (string.IsNullOrEmpty(acntNo)) throw new InvalidOperationException("계좌번호(getAcntNo)가 비었습니다.");
                 if (string.IsNullOrEmpty(pwd4)) throw new InvalidOperationException("비번4자리(getPwd4)가 비었습니다.");
 
-                // XING 종목코드: "A" + shcode
                 string isuNo = shcode.Trim();
                 if (!isuNo.StartsWith("A", StringComparison.OrdinalIgnoreCase))
                     isuNo = "A" + isuNo;
@@ -115,7 +83,6 @@ namespace Exercise_1
                 {
                     try
                     {
-                        // ✅ OrdNo: OutBlock2 우선, 없으면 OutBlock1 fallback
                         string ordNoRaw2 = _qOrder.GetFieldData("CSPAT00600OutBlock2", "OrdNo", 0);
                         string ordNoRaw1 = _qOrder.GetFieldData("CSPAT00600OutBlock1", "OrdNo", 0);
 
@@ -131,7 +98,6 @@ namespace Exercise_1
 
                         if (!string.IsNullOrEmpty(ordNoTrim))
                         {
-                            // ✅ 0600: ordNo -> (side, band) 등록
                             if (Login.OrdMap == null)
                             {
                                 Write("[CSPAT00600 주문전송확인] Login.OrdMap is null -> REGISTER FAIL");
@@ -152,7 +118,6 @@ namespace Exercise_1
                         }
                         else
                         {
-                            // ✅ 주문 미접수(거절/장외/기타) -> 0550 즉시 해제
                             Write("[CSPAT00600 주문전송확인.FAIL] OrdNo EMPTY");
                             Login.TradeWait?.OnOrderSendConfirmFailed(sideKor, band, "ORDNO_EMPTY");
                         }
@@ -172,7 +137,6 @@ namespace Exercise_1
 
                 try
                 {
-                    // ✅ 전송 직전 덤프(09604 디버그)
                     Write(
                         $"[CSPAT00600 IN] AcntNo='{acntNo}', PwdLen={pwd4.Length}, " +
                         $"IsuNo='{isuNo}', BnsTpCode={bnsTpCode}, OrdQty={sQty}, OrdPrc={sPrc}, " +
@@ -216,7 +180,6 @@ namespace Exercise_1
             }
         }
 
-        // 주문 메시지(장종료 등) - 주문전송확인 이전 단계에서 실패 감지 가능
         private void OnOrderMessage(bool isSysErr, string code, string msg)
         {
             Write($"[ORDER MSG] sysErr={isSysErr}, code={code}, msg={msg}");
@@ -227,7 +190,6 @@ namespace Exercise_1
 
             if (looksFail && !string.IsNullOrEmpty(_lastSideKor) && _lastBand > 0)
             {
-                // 0550에 실패 통지 (pending 해제)
                 Login.TradeWait?.OnOrderMessageFail(_lastSideKor, _lastBand, code, msg);
             }
         }
@@ -242,7 +204,6 @@ namespace Exercise_1
         {
             sideKor = (sideKor ?? "").Trim();
 
-            // 영문 들어와도 정규화(호출부 혼선 방지)
             if (string.Equals(sideKor, "BUY", StringComparison.OrdinalIgnoreCase)) return "매수";
             if (string.Equals(sideKor, "SELL", StringComparison.OrdinalIgnoreCase)) return "매도";
 
@@ -264,15 +225,9 @@ namespace Exercise_1
 
         public void Dispose()
         {
-            try
-            {
-                _qOrder.ReceiveMessage -= OnOrderMessage;
-            }
-            catch { }
-
+            try { _qOrder.ReceiveMessage -= OnOrderMessage; } catch { }
             try { _sendLock.Dispose(); } catch { }
         }
     }
 }
-
-//2026-01-18-00-00-00
+// 2026-02-09 69055

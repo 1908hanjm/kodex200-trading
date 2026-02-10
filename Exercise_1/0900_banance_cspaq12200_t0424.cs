@@ -10,14 +10,17 @@
 // - t0424는 OutBlock1 다건이므로 row 전체 합산한다.
 // - 연속조회 시 cts_expcode를 OutBlock에서 읽어 다음 요청 InBlock에 반영한다.
 //
-// 주의:
-// - XING 로그인/세션은 0100_Xing_connect.cs에서 완료되어 있어야 합니다.
-// - 이 모듈은 TR 호출만 담당(세션 관리/로그인 책임 없음).
-// - RES 경로는 기존 프로젝트 경로를 그대로 사용합니다.
+// ✅ 이번 최종본 핵심:
+// - rc == -21 (TR 전송제한) 은 throw 하지 않는다.
+//   -> 로그 남기고 (0,0) 또는 현재까지 합산값 반환 후 종료한다. (프로그램 "중단" 방지)
+// - RecCnt = "00001" 사용
+// - COM(XAQueryClass) FinalReleaseComObject로 해제 (반복 호출 안정성)
+// - 쿨다운 로직은 넣지 않는다. (요청사항)
 
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using XA_DATASETLib;
@@ -35,6 +38,7 @@ namespace Exercise_1
 
         /// <summary>
         /// CSPAQ12200: 주문가능금액/예수금(D2 등) 조회
+        /// - rc == -21(전송제한) 이면 throw 금지: (0,0) 반환
         /// </summary>
         public Task<(double cash, double d2)> QueryCspaq12200Async(
             string actNo,
@@ -48,8 +52,8 @@ namespace Exercise_1
 
             return Task.Run(() =>
             {
-                var q = new XAQueryClass();
-                var done = new AutoResetEvent(false);
+                XAQueryClass q = null;
+                AutoResetEvent done = null;
 
                 string lastErr = null;
 
@@ -59,15 +63,25 @@ namespace Exercise_1
 
                 try
                 {
+                    q = new XAQueryClass();
+                    done = new AutoResetEvent(false);
+
                     q.LoadFromResFile(@"C:\LS_SEC\xingAPI\res\CSPAQ12200.res");
 
                     onData = (string trCode) =>
                     {
-                        done.Set();
+                        try { done.Set(); } catch { }
                     };
 
                     onMsg = (bool isSysErr, string code, string msg) =>
                     {
+                        // 시스템 오류만 잡고, 메시지는 로그로 남긴다.
+                        try
+                        {
+                            _log($"[CSPAQ12200 MSG] sysErr={isSysErr} code={code} msg={msg}");
+                        }
+                        catch { }
+
                         if (isSysErr)
                             lastErr = $"[{code}] {msg}";
                     };
@@ -75,19 +89,34 @@ namespace Exercise_1
                     q.ReceiveData += onData;
                     q.ReceiveMessage += onMsg;
 
-                    // inblock
-                    q.SetFieldData("CSPAQ12200InBlock1", "RecCnt", 0, "1");
+                    // InBlock
+                    q.SetFieldData("CSPAQ12200InBlock1", "RecCnt", 0, "00001");
                     q.SetFieldData("CSPAQ12200InBlock1", "MgmtBrnNo", 0, "");
                     q.SetFieldData("CSPAQ12200InBlock1", "AcntNo", 0, actNo);
                     q.SetFieldData("CSPAQ12200InBlock1", "Pwd", 0, pwd);
                     q.SetFieldData("CSPAQ12200InBlock1", "BalCreTp", 0, "0");
 
                     int r = q.Request(false);
-                    if (r < 0) throw new Exception("CSPAQ12200 TR 요청 실패: " + r);
+                    if (r < 0)
+                    {
+                        // ✅ -21: TR 전송제한 (throw 금지)
+                        if (r == -21)
+                        {
+                            _log("CSPAQ12200 THROTTLED rc=-21 (전송제한) -> return (0,0)");
+                            return (0.0, 0.0);
+                        }
 
-                    if (!done.WaitOne(timeout)) throw new TimeoutException("CSPAQ12200 응답 타임아웃");
-                    if (!string.IsNullOrEmpty(lastErr)) throw new Exception("CSPAQ12200 오류: " + lastErr);
+                        throw new Exception("CSPAQ12200 TR 요청 실패: " + r);
+                    }
 
+                    if (!done.WaitOne(timeout))
+                        throw new TimeoutException("CSPAQ12200 응답 타임아웃");
+
+                    if (!string.IsNullOrEmpty(lastErr))
+                        throw new Exception("CSPAQ12200 오류: " + lastErr);
+
+                    // OutBlock2: 주문가능금액 / 예수금(D2 등)
+                    // - field명은 사용 중인 RES 기준. 값이 비어도 0 처리.
                     double cash = ToDouble(q.GetFieldData("CSPAQ12200OutBlock2", "MnyOrdAbleAmt", 0));
                     double d2 = ToDouble(q.GetFieldData("CSPAQ12200OutBlock2", "DpsastTotamt", 0));
 
@@ -96,16 +125,16 @@ namespace Exercise_1
                 }
                 finally
                 {
-                    try { if (onData != null) q.ReceiveData -= onData; } catch { }
-                    try { if (onMsg != null) q.ReceiveMessage -= onMsg; } catch { }
-                    try { done.Dispose(); } catch { }
-                }
+                    try { if (q != null && onData != null) q.ReceiveData -= onData; } catch { }
+                    try { if (q != null && onMsg != null) q.ReceiveMessage -= onMsg; } catch { }
+                    try { done?.Dispose(); } catch { }
 
-                double ToDouble(string s)
-                {
-                    if (string.IsNullOrWhiteSpace(s)) return 0;
-                    double.TryParse(s.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var v);
-                    return v;
+                    try
+                    {
+                        if (q != null)
+                            Marshal.FinalReleaseComObject(q);
+                    }
+                    catch { }
                 }
             });
         }
@@ -113,6 +142,7 @@ namespace Exercise_1
         /// <summary>
         /// t0424: 보유수량 합계(qtySum) + 당일손익 합계(pnlSum) 조회
         /// - 연속조회(q.IsNext) 지원
+        /// - rc == -21(전송제한) 이면 throw 금지: 현재까지 합산값 반환 후 종료
         /// </summary>
         public Task<(long qtySum, double pnlSum)> QueryT0424SumAsync(
             string actNo,
@@ -126,8 +156,8 @@ namespace Exercise_1
 
             return Task.Run<(long qtySum, double pnlSum)>(() =>
             {
-                var q = new XAQueryClass();
-                var done = new AutoResetEvent(false);
+                XAQueryClass q = null;
+                AutoResetEvent done = null;
 
                 string lastErr = null;
                 long qtySum = 0;
@@ -141,6 +171,9 @@ namespace Exercise_1
 
                 try
                 {
+                    q = new XAQueryClass();
+                    done = new AutoResetEvent(false);
+
                     q.LoadFromResFile(@"C:\LS_SEC\xingAPI\res\t0424.res");
 
                     onData = (string trCode) =>
@@ -157,10 +190,10 @@ namespace Exercise_1
                                 string janqtyStr = q.GetFieldData("t0424OutBlock1", "janqty", i);
                                 string dtsunikStr = q.GetFieldData("t0424OutBlock1", "dtsunik", i);
 
-                                if (long.TryParse((janqtyStr ?? "").Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var jq))
+                                if (TryParseLong(janqtyStr, out var jq))
                                     qtySum += jq;
 
-                                if (double.TryParse((dtsunikStr ?? "").Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var ds))
+                                if (TryParseDouble(dtsunikStr, out var ds))
                                     pnlSum += ds;
                             }
 
@@ -173,12 +206,18 @@ namespace Exercise_1
                         }
                         finally
                         {
-                            done.Set();
+                            try { done.Set(); } catch { }
                         }
                     };
 
                     onMsg = (bool isSysErr, string code, string msg) =>
                     {
+                        try
+                        {
+                            _log($"[t0424 MSG] sysErr={isSysErr} code={code} msg={msg}");
+                        }
+                        catch { }
+
                         if (isSysErr)
                             lastErr = $"[{code}] {msg}";
                     };
@@ -190,10 +229,21 @@ namespace Exercise_1
                     SetT0424InBlock(q, actNo, pwd, cts_expcode: "");
 
                     int r = q.Request(false);
-                    if (r < 0) throw new Exception("t0424 요청 실패: " + r);
+                    if (r < 0)
+                    {
+                        if (r == -21)
+                        {
+                            _log("t0424 THROTTLED rc=-21 (전송제한) -> return current sums");
+                            return (qtySum, pnlSum);
+                        }
+                        throw new Exception("t0424 요청 실패: " + r);
+                    }
 
-                    if (!done.WaitOne(timeout)) throw new TimeoutException("t0424 첫 응답 타임아웃");
-                    if (!string.IsNullOrEmpty(lastErr)) throw new Exception("t0424 오류: " + lastErr);
+                    if (!done.WaitOne(timeout))
+                        throw new TimeoutException("t0424 첫 응답 타임아웃");
+
+                    if (!string.IsNullOrEmpty(lastErr))
+                        throw new Exception("t0424 오류: " + lastErr);
 
                     // 연속조회
                     while (q.IsNext)
@@ -204,10 +254,21 @@ namespace Exercise_1
                         SetT0424InBlock(q, actNo, pwd, cts_expcode: cts);
 
                         int r2 = q.Request(true);
-                        if (r2 < 0) throw new Exception("t0424 연속요청 실패: " + r2);
+                        if (r2 < 0)
+                        {
+                            if (r2 == -21)
+                            {
+                                _log("t0424 NEXT THROTTLED rc=-21 (전송제한) -> stop loop and return current sums");
+                                break;
+                            }
+                            throw new Exception("t0424 연속요청 실패: " + r2);
+                        }
 
-                        if (!done.WaitOne(timeout)) throw new TimeoutException("t0424 연속 응답 타임아웃");
-                        if (!string.IsNullOrEmpty(lastErr)) throw new Exception("t0424 오류: " + lastErr);
+                        if (!done.WaitOne(timeout))
+                            throw new TimeoutException("t0424 연속 응답 타임아웃");
+
+                        if (!string.IsNullOrEmpty(lastErr))
+                            throw new Exception("t0424 오류: " + lastErr);
                     }
 
                     _log($"t0424 OK qtySum={qtySum} pnlSum={pnlSum}");
@@ -215,9 +276,16 @@ namespace Exercise_1
                 }
                 finally
                 {
-                    try { if (onData != null) q.ReceiveData -= onData; } catch { }
-                    try { if (onMsg != null) q.ReceiveMessage -= onMsg; } catch { }
-                    try { done.Dispose(); } catch { }
+                    try { if (q != null && onData != null) q.ReceiveData -= onData; } catch { }
+                    try { if (q != null && onMsg != null) q.ReceiveMessage -= onMsg; } catch { }
+                    try { done?.Dispose(); } catch { }
+
+                    try
+                    {
+                        if (q != null)
+                            Marshal.FinalReleaseComObject(q);
+                    }
+                    catch { }
                 }
             });
         }
@@ -246,7 +314,31 @@ namespace Exercise_1
             var (qtySum, pnlSum) = await QueryT0424SumAsync(actNo, pwd, timeoutT0424).ConfigureAwait(false);
             return (cash, d2, qtySum, pnlSum);
         }
+
+        private double ToDouble(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return 0;
+            var t = (s ?? "").Trim().Replace(",", "");
+            double.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out var v);
+            return v;
+        }
+
+        private static bool TryParseLong(string s, out long v)
+        {
+            v = 0;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            var t = (s ?? "").Trim().Replace(",", "");
+            return long.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out v);
+        }
+
+        private static bool TryParseDouble(string s, out double v)
+        {
+            v = 0.0;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            var t = (s ?? "").Trim().Replace(",", "");
+            return double.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out v);
+        }
     }
 }
 
-// 2026-01-30 27461
+// 2026-02-07 48392
