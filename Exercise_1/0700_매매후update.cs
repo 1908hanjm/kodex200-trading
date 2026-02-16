@@ -1,15 +1,18 @@
-﻿// 0700_매매후update.cs  (복붙용 / C# 7.3)  [✅LV3 컬럼/타이틀 보호]
+﻿// 0700_매매후update.cs  (복붙용 / C# 7.3)  [✅LV3 컬럼/타이틀 보호 + ✅부분체결 시 밴드이동 금지(UNLOCK 후 Finalize)]
 // ------------------------------------------------------------
-// ✅ 이번 수정 핵심:
+// ✅ 이번 수정 핵심(당신 정책 반영):
+// - 부분체결 시에는 DB/메모리 Qty만 반영한다. (ApplyFillOnly)
+// - StartBand/FocusBand 이동 + Reset/UI/LV Reload는 "LOCK이 풀린 직후" 1회만 수행한다. (FinalizeAfterUnlock)
+//   => "주문 내고 LOCK, LOCK이 풀리면 그때 밴드 이동" 정책 그대로 구현
+//
+// ✅ 기존 보호 유지:
 // - DB Reload는 listView1(밴드표)만 수행한다.
 // - listView3(주문/체결 목록)는 0700에서 절대 Clear/Columns 재구성하지 않는다.
-//   -> listView3 타이틀이 band/팔가격/... 로 변하는 문제 완전 차단
 // ------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Data.SQLite;
-using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
@@ -26,7 +29,24 @@ namespace Exercise_1
             _login = login ?? throw new ArgumentNullException(nameof(login));
         }
 
+        // ------------------------------------------------------------
+        // ✅ (호환용) 기존 호출이 남아있어도 컴파일/동작은 되게 유지
+        // - 이제 이 메서드는 "Fill만 반영"하고 Finalize(밴드 이동)는 하지 않는다.
+        // - Finalize는 0650에서 UNLOCK 직후 FinalizeAfterUnlock()로만 호출한다.
+        // ------------------------------------------------------------
         public void AfterFillUpdate(int band, int deltaQty, double price, string side, long execNo)
+        {
+            ApplyFillOnly(band, deltaQty, price, side, execNo);
+
+            // 안전 로그(정책 확인용)
+            Console.WriteLine("[0700] AfterFillUpdate called -> ApplyFillOnly ONLY (Finalize is moved to FinalizeAfterUnlock)");
+        }
+
+        // ------------------------------------------------------------
+        // ✅ 1) 부분체결 포함: 체결수량만큼 Qty 반영 (메모리+DB)
+        //    ❌ StartBand 재계산 / Reset / UI / LV Reload 절대 금지
+        // ------------------------------------------------------------
+        public void ApplyFillOnly(int band, int deltaQty, double price, string side, long execNo)
         {
             try
             {
@@ -37,33 +57,56 @@ namespace Exercise_1
                                (side == "매도") ? -deltaQty : 0;
                 if (diffQty == 0) return;
 
+                // ✅ 사용자 규칙: BUY는 K+1 반영, SELL은 K 반영
                 int applyBand = (side == "매수") ? band + 1 : band;
 
                 var br = Login.BandList.FirstOrDefault(x => x.Band == applyBand);
-                if (br == null) return;
+                if (br == null)
+                {
+                    Console.WriteLine($"[0700] ApplyFillOnly: BandList missing applyBand={applyBand} (side={side}, K={band})");
+                    return;
+                }
 
                 long oldQty = br.Qty;
                 long newQty = Math.Max(0, oldQty + diffQty);
                 br.Qty = newQty;
 
-                Console.WriteLine($"[0700] QtyUpdate(mem) side={side} applyBand={applyBand} {oldQty}->{newQty}");
+                Console.WriteLine($"[0700] QtyUpdate(mem) side={side} applyBand={applyBand} {oldQty}->{newQty} (execNo={execNo})");
 
                 UpdateQtyInKodex200New(applyBand, newQty);
 
+                // ❌ 여기서 StartBand 재계산/Reset/UI/LV Reload 하지 않는다!
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[0700 ERROR][ApplyFillOnly] " + ex);
+            }
+        }
+
+        // ------------------------------------------------------------
+        // ✅ 2) UNLOCK 직후 1회만 호출: StartBand 이동 + Reset + UI + LV Reload
+        // ------------------------------------------------------------
+        public void FinalizeAfterUnlock(string sideKor, double lastFillPrice)
+        {
+            try
+            {
+                sideKor = (sideKor ?? "").Trim();
+
                 int oldStart = Login.시작밴드변수;
                 int newStart = RecalcStartBandFromBandList();
+
                 Login.시작밴드변수 = newStart;
                 _login.CurrentStartBand = newStart;
 
-                Console.WriteLine($"[0700] StartBand {oldStart} -> {newStart}");
+                Console.WriteLine($"[0700] StartBand {oldStart} -> {newStart} (FinalizeAfterUnlock)");
 
-                TryResetDecisionEngine_MUST_BE_LAST(side);
-                TryRenderBandsLikeBefore_MUST_BE_LAST(price);
+                TryResetDecisionEngine_MUST_BE_LAST(sideKor);
+                TryRenderBandsLikeBefore_MUST_BE_LAST(lastFillPrice);
                 TryReloadListViews_MUST_BE_LAST(); // ✅ LV1만
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[0700 ERROR] " + ex);
+                Console.WriteLine("[0700 ERROR][FinalizeAfterUnlock] " + ex);
             }
         }
 
@@ -150,7 +193,6 @@ namespace Exercise_1
                     }
 
                     // ✅ 핵심: LV3는 절대 Clear/Columns 재구성하지 않는다.
-                    // - listView3는 주문/체결 목록용이므로 헤더가 바뀌면 안 된다.
                     bool lv3Exists = (lv3 != null);
 
                     Console.WriteLine($"[0700][LV] Reload(DB) OK lv1={ok1} lv3(untouched)={lv3Exists} rows={rows.Count}");
@@ -270,6 +312,7 @@ namespace Exercise_1
                     lv.Items.Add(it);
                 }
 
+                // 시작밴드 선택 표시
                 try
                 {
                     int startBand = Login.시작밴드변수;
@@ -305,7 +348,7 @@ namespace Exercise_1
                 {
                     cmd.CommandText =
                         "UPDATE kodex200_new SET qty=@q, 진짜산가격=0 WHERE band=@b";
-                    cmd.Parameters.AddWithValue("@q", qty);
+                    cmd.Parameters.AddWithValue("@q", qty); // ✅ 오타 수정(AddWAithValue -> AddWithValue)
                     cmd.Parameters.AddWithValue("@b", band);
                     cmd.ExecuteNonQuery();
                 }
@@ -320,8 +363,6 @@ namespace Exercise_1
                 .DefaultIfEmpty(0)
                 .Max();
         }
-
-        // 2026-02-09 12480
     }
 }
-// 2026-02-09 50733
+// 2026-02-11 90742

@@ -1,6 +1,10 @@
 ﻿// RichTextBoxBands.cs — 실전용 버전 (C# 7.3 호환)
-// 현재가 + (시작밴드의) 팔가격/살가격 표시 + ✅거래밴드 표시 + 틱 값 정렬/출력 + 색상 구분
+// 현재가 + (시작밴드의) 팔가격/살가격 표시 + ✅거래밴드(=주문 예정 밴드) 표시 + 틱 값 정렬/출력 + 색상 구분
 // 시작밴드 규칙: qty > 0 인 밴드 중 band 번호가 가장 큰 밴드
+//
+// ✅ 사용자 결정(옵션3):
+// - 거래밴드는 "현재가가 속한 밴드"가 아니라,
+//   0300_밴드매칭에서 확정된 "실제 주문 예정 밴드" 문자열(Login.UiPlannedBandsText)을 그대로 출력한다.
 
 using System;
 using System.Collections.Generic;
@@ -13,12 +17,10 @@ namespace Exercise_1
     public sealed class RichTextBoxBands
     {
         private readonly RichTextBox _rtb;
-        private readonly string _connStr;
 
-        public RichTextBoxBands(RichTextBox rtb, string connStr)
+        public RichTextBoxBands(RichTextBox rtb)
         {
             _rtb = rtb ?? throw new ArgumentNullException(nameof(rtb));
-            _connStr = connStr ?? throw new ArgumentNullException(nameof(connStr));
         }
 
         // 예전 코드와의 호환용 (지금 구조에서는 할 일 없음)
@@ -27,21 +29,15 @@ namespace Exercise_1
             // 필요 없으니 비워둠
         }
 
-        // ✅ 기존 호출 호환
-        public void RenderDesc(int current, IEnumerable<int> prevValues)
-        {
-            RenderDesc(current, prevValues, tradeBandText: null);
-        }
-
         // ============================================================
         //  현재값 + 이전값들 내림차순 정렬하여 색상 출력
         //  + 맨 위에 "현재가/팔가격/살가격/거래밴드" 라벨 붙여서 출력
         // ============================================================
-        public void RenderDesc(int current, IEnumerable<int> prevValues, string tradeBandText)
+        public void RenderDesc(int current, IEnumerable<int> prevValues)
         {
             if (_rtb.InvokeRequired)
             {
-                _rtb.Invoke(new Action(() => RenderDesc(current, prevValues, tradeBandText)));
+                _rtb.Invoke(new Action(() => RenderDesc(current, prevValues)));
                 return;
             }
 
@@ -85,8 +81,8 @@ namespace Exercise_1
                 _rtb.AppendText("※ qty > 0 인 시작밴드를 찾지 못했습니다.\n");
             }
 
-            // ✅ 거래밴드 출력(옵션2)
-            string t = (tradeBandText ?? "").Trim();
+            // ✅ 거래밴드(=0300이 확정한 주문 예정 밴드)
+            string t = (Login.UiPlannedBandsText ?? "(없음)").Trim();
             if (string.IsNullOrEmpty(t)) t = "(없음)";
 
             AppendFancyText("거래밴드 -> ", Color.Black);

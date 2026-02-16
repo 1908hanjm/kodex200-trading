@@ -97,6 +97,7 @@
     <Compile Include="0300_밴드매칭.cs" />
     <Compile Include="0400_매매실행.cs" />
     <Compile Include="0500_매매전송_Xing.cs" />
+    <Compile Include="0530_매매_Xing.cs" />
     <Compile Include="0550_부분체결확인.cs" />
     <Compile Include="0600_주문번호_매핑.cs" />
     <Compile Include="060_listView3_당일거래.cs" />
@@ -107,6 +108,9 @@
     <Compile Include="0900_banance_cspaq12200_t0424.cs" />
     <Compile Include="0910_Richtextbox.cs" />
     <Compile Include="1000_현금주문가능금액.cs" />
+    <Compile Include="1010_증권사보유주수.cs" />
+    <Compile Include="3000_주문모델.cs" />
+    <Compile Include="3001_공용전달타입.cs" />
     <Compile Include="Feeds.cs" />
     <Compile Include="IOrderService.cs" />
     <Compile Include="Repositories\RepoBootstrap.cs" />

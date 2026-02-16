@@ -61,6 +61,7 @@
             this.radioButton1 = new System.Windows.Forms.RadioButton();
             this.radioButton2 = new System.Windows.Forms.RadioButton();
             this.button7 = new System.Windows.Forms.Button();
+            this.textBox8 = new System.Windows.Forms.TextBox();
             this.panel3.SuspendLayout();
             this.panel2.SuspendLayout();
             this.panel4.SuspendLayout();
@@ -308,7 +309,7 @@
             this.panel4.Controls.Add(this.label9);
             this.panel4.Location = new System.Drawing.Point(123, 12);
             this.panel4.Name = "panel4";
-            this.panel4.Size = new System.Drawing.Size(206, 37);
+            this.panel4.Size = new System.Drawing.Size(370, 37);
             this.panel4.TabIndex = 33;
             // 
             // button2
@@ -361,7 +362,7 @@
             // 
             // button5
             // 
-            this.button5.Location = new System.Drawing.Point(347, 12);
+            this.button5.Location = new System.Drawing.Point(499, 12);
             this.button5.Name = "button5";
             this.button5.Size = new System.Drawing.Size(162, 35);
             this.button5.TabIndex = 34;
@@ -423,10 +424,19 @@
             this.button7.UseVisualStyleBackColor = true;
             this.button7.Click += new System.EventHandler(this.button7_Click);
             // 
+            // textBox8
+            // 
+            this.textBox8.Location = new System.Drawing.Point(335, 308);
+            this.textBox8.Margin = new System.Windows.Forms.Padding(3, 2, 3, 2);
+            this.textBox8.Name = "textBox8";
+            this.textBox8.Size = new System.Drawing.Size(81, 25);
+            this.textBox8.TabIndex = 40;
+            // 
             // Login
             // 
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
             this.ClientSize = new System.Drawing.Size(1432, 754);
+            this.Controls.Add(this.textBox8);
             this.Controls.Add(this.button7);
             this.Controls.Add(this.radioButton2);
             this.Controls.Add(this.radioButton1);
@@ -491,5 +501,6 @@
         private System.Windows.Forms.RadioButton radioButton1;
         private System.Windows.Forms.RadioButton radioButton2;
         private System.Windows.Forms.Button button7;
+        private System.Windows.Forms.TextBox textBox8;
     }
 }

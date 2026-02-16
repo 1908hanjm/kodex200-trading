@@ -10,10 +10,10 @@
 //     textBox2/3=0
 // - ✅ 내부 tickList(_ticks)에 currentPrice를 누적하여 tickMin/tickMax를 계산
 //
-// ✅ [추가] 거래밴드(옵션2: 지나온 밴드만 표시)
-// - 0270은 밴드번호를 "계산"하지 않는다. 호출자가 bandNo를 넘겨준다.
-// - bandNo가 바뀌는 순간, 직전 bandNo만 문자열에 누적한다. (현재 밴드는 누적하지 않음)
-// - FIRE 시점(체결 확정 등)에 ResetTradePath()를 호출해서 초기화한다.
+// ✅ 정리(사용자 결정: "실제 주문 예정 밴드만 표시"로 전환)
+// - 0270은 거래밴드 문자열/누적/Reset 등 일절 담당하지 않는다.
+// - 거래밴드 UI는 0300(밴드매칭)에서 "주문 예정 밴드"를 확정하고
+//   Login.UiPlannedBandsText 같은 전역 문자열로만 전달한다.
 // ------------------------------------------------------------
 
 using System;
@@ -41,31 +41,6 @@ namespace Exercise_1
         private bool _wasAbove = false;
         private bool _wasBelow = false;
 
-        // =========================================================
-        // ✅ 거래밴드(옵션2) 최소 상태: string + int
-        // =========================================================
-        private string _tradeBandsPassed = ""; // "밴드5, 밴드4"
-        private int _prevBandNo = 0;           // 직전 bandNo (현재 bandNo는 포함하지 않음)
-        private bool _tradeActive = false;     // bandNo 추적 활성화 여부
-
-        /// <summary>
-        /// 옵션2 거래밴드 표시 문자열. 비어있으면 "(없음)" 리턴.
-        /// </summary>
-        public string TradeBandsPassedText
-        {
-            get { return string.IsNullOrEmpty(_tradeBandsPassed) ? "(없음)" : _tradeBandsPassed; }
-        }
-
-        /// <summary>
-        /// FIRE(매매 실행) 직후 호출: 거래밴드 초기화
-        /// </summary>
-        public void ResetTradePath()
-        {
-            _tradeBandsPassed = "";
-            _prevBandNo = 0;
-            _tradeActive = false;
-        }
-
         public _0270_틱계산2(
             Control owner,
             TextBox textBox1_Current,
@@ -84,24 +59,10 @@ namespace Exercise_1
         }
 
         // =========================================================
-        // ✅ 기존 호환용(밴드번호 모름): 거래밴드 추적 안함
+        // ✅ 핵심 API: StartBand의 팔/살(또는 upper/lower)을 넘겨서 표시만 수행
         // =========================================================
         public void UpdateByBand(long currentPrice, long 팔가격, long 살가격)
         {
-            UpdateByBand(currentPrice, 팔가격, 살가격, bandNo: 0);
-        }
-
-        // =========================================================
-        // ✅ 신규 오버로드: bandNo를 함께 받아 거래밴드(옵션2) 누적
-        // =========================================================
-        public void UpdateByBand(long currentPrice, long 팔가격, long 살가격, int bandNo)
-        {
-            // ✅ bandNo 추적(옵션2)
-            if (bandNo > 0)
-            {
-                TrackTradeBand_Option2(bandNo);
-            }
-
             // ✅ upper/lower 정규화 (팔/살 순서 뒤집혀도 안전)
             long upper = Math.Max(팔가격, 살가격);
             long lower = Math.Min(팔가격, 살가격);
@@ -120,7 +81,7 @@ namespace Exercise_1
             long tickMin = _ticks.Min();
             long tickMax = _ticks.Max();
 
-            // 1) IN-BAND이면 표시 리셋(거래밴드는 FIRE에서만 ResetTradePath로 초기화)
+            // 1) IN-BAND이면 리셋
             if (inBand)
             {
                 _wasAbove = false;
@@ -132,9 +93,7 @@ namespace Exercise_1
 
             // 2) OUT-BAND인데 둘 다 false면 방어
             if (!above && !below)
-            {
                 return;
-            }
 
             // 중복방지(디버깅 단계에서는 OFF 권장)
             // if (above && _wasAbove) return;
@@ -154,37 +113,6 @@ namespace Exercise_1
             {
                 ApplyOutBand(currentPrice, above, below, tickMin, tickMax);
             }
-        }
-
-        // ✅ 옵션2: “지나온 밴드만” 누적
-        private void TrackTradeBand_Option2(int currentBandNo)
-        {
-            if (!_tradeActive)
-            {
-                _tradeActive = true;
-                _prevBandNo = currentBandNo; // 기준만 잡음
-                return;
-            }
-
-            if (currentBandNo == _prevBandNo) return;
-
-            // band가 바뀌었다 = 직전 밴드를 “지나왔다”
-            AppendPassedBand(_prevBandNo);
-
-            // 기준 갱신
-            _prevBandNo = currentBandNo;
-        }
-
-        private void AppendPassedBand(int band)
-        {
-            if (band <= 0) return;
-
-            string token = "밴드" + band.ToString(CultureInfo.InvariantCulture);
-
-            if (string.IsNullOrEmpty(_tradeBandsPassed))
-                _tradeBandsPassed = token;
-            else
-                _tradeBandsPassed += ", " + token;
         }
 
         // IN-BAND: textbox 0 초기화
@@ -220,7 +148,7 @@ namespace Exercise_1
                 {
                     _textBox3_TickMax.Text = tickMax.ToString(CultureInfo.InvariantCulture);
 
-                    long diff = tickMax - currentPrice;
+                    long diff = tickMax - currentPrice; // tickMax - cur
                     _textBox2_Diff.Text = diff.ToString(CultureInfo.InvariantCulture);
 
                     _textBox7_TickMin.Text = "0";
@@ -230,8 +158,7 @@ namespace Exercise_1
                 {
                     _textBox7_TickMin.Text = tickMin.ToString(CultureInfo.InvariantCulture);
 
-                    // GAP: cur - tickMin
-                    long gap = currentPrice - tickMin;
+                    long gap = currentPrice - tickMin; // cur - tickMin
                     _textBox4_Gap.Text = gap.ToString(CultureInfo.InvariantCulture);
 
                     _textBox3_TickMax.Text = "0";

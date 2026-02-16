@@ -26,7 +26,7 @@ namespace Exercise_1
 
         public void Start(string shcode)
         {
-            Console.WriteLine("[BOOT][TEST] calling TickFeed.Start now...");
+            Console.WriteLine($"[BOOT][{_0050_Real_Test환경결정.RunMode}] calling TickFeed.Start now...");
             // _tickFromXing.Start("069500");
             EnsureNotDisposed();
 

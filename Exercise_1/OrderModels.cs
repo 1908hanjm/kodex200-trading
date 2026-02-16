@@ -3,17 +3,17 @@
 namespace Exercise_1
 {
     // ───────────── ENUMS ─────────────
-    public enum TradeSide
-    {
-        Buy = 2,  // XING 기준: 1=매도, 2=매수
-        Sell = 1
-    }
+    //public enum TradeSide
+    //{
+    //    Buy = 2,  // XING 기준: 1=매도, 2=매수
+    //    Sell = 1
+    //}
 
-    public enum OrderType
-    {
-        Market = 0,
-        Limit = 1
-    }
+    //public enum OrderType
+    //{
+    //    Market = 0,
+    //    Limit = 1
+    //}
 
     // ───────────── REQUEST ─────────────
     public sealed class OrderRequest

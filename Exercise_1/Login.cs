@@ -8,6 +8,8 @@
 //리스트박스에 있는 틱min를  textBox7 에 넣어줘
 //textbox4 를 채워줘 식은 textBox1 - textBox7   (현재가 - 틱Min)
 //textbox3, textbox2에 0값 assign
+//
+// ※ 리스트박스는 이제 0270 내부 _ticks(중복제거된 distinct tick list)로 대체한다.
 
 // Login.cs (복붙용 / C# 7.3)  [static 방식 통일: 0001 선택 + 0050 Apply]
 // ------------------------------------------------------------
@@ -18,8 +20,18 @@
 // - 이후 DB/UI/모듈은 0050의 DbPath/ConnStr/Account/UserId/Password만 참조
 // - 기존 Login_Shown_Async의 "자동 접속" 흐름은 StartRealMode_Async로 격리하여
 //   IsReal일 때만 실행되도록 변경
-// ------------------------------------------------------------
+//
+// ✅ 이번 반영(요청):
+// - Login_Shown() 별도 핸들러는 사용하지 않음(삭제)
+// - 1010(CSPAQ12300) 보유주수 조회는
+//   REAL/TEST 로그인 성공 직후(StartRealMode_Async / StartTestMode)에서 1회 호출하여 textBox8에 표시
+//
+// ✅ 이번 수정(컴파일/정리):
+// - FindTradeBandFromStart / MakeTradeBandText / bandNo UpdateByBand / TradeBandsPassedText / ResetTradePath 의존 제거
+// - 거래밴드 표시는 Login.UiPlannedBandsText 하나로 통일
+// - UiPlannedBandsText가 "(없음)"이면 UI에서 시작밴드를 "(밴드NN)"로 표시
 
+using Exercise_1;
 using Exercise_1.Domain;
 using Exercise_1.Repositories;
 using System;
@@ -78,6 +90,7 @@ namespace Exercise_1
                 return $"Data Source={DbPath};Version=3;";
             }
         }
+        private bool _debugBandMsgShown = false;
 
         public static System.Windows.Forms.ListView ListView1Ref;   // ✅ ListView 모호성 방지
 
@@ -111,6 +124,10 @@ namespace Exercise_1
         // ✅ FocusBand(기존 유지)
         public static int FocusBand { get; private set; } = 0;
         public static long FocusVersion { get; private set; } = 0;
+
+        // ✅ 거래밴드 표시는 이것 하나로 통일 (0300에서 "주문 예정 밴드"를 확정해서 넣어도 되고,
+        //    지금처럼 기본값일 때는 UI에서 "(밴드Start)"로 표시하게 한다.)
+        public static string UiPlannedBandsText = "(없음)";
 
         public static void SetFocusBand(int newBand, string why)
         {
@@ -393,8 +410,6 @@ namespace Exercise_1
 
         // ─────────────────────────────────────────────
         // ✅ TEST 시작(모의서버 로그인 + 주문 가능 + ✅실시간 틱(XAReal)도 REAL처럼 수신)
-        // - 핵심: TEST에서도 _tickFromXing.Start(currentShcode)를 호출해야 RichTextBox에 쌓임
-        // - DB replay(_tickFromDb)는 기본 STOP 유지(사용자가 button8로 시작)
         // ─────────────────────────────────────────────
         private async void StartTestMode()
         {
@@ -422,7 +437,6 @@ namespace Exercise_1
                     setPanel2Color: SetPanel2Color
                 );
 
-                // ✅ 중요: ConnectAsync 내부가 "TEST면 모의서버"로 붙도록 되어 있어야 합니다.
                 _mmXing = await _xingConn.ConnectAsync(currentShcode);
                 if (_mmXing == null)
                 {
@@ -441,21 +455,17 @@ namespace Exercise_1
                 _exec = new 매매실행(_mmXing, () => currentShcode);
                 _exec.Log += s => Debug.WriteLine("[매매실행][TEST] " + s);
 
-                // =========================================================
-                // ✅ TEST도 REAL처럼: 실시간 틱 수신 시작 (XAReal: S3_/K3_)
-                // - DB replay는 기본 STOP 유지
-                // =========================================================
-                try { _tickFromDb?.Stop(); } catch { } // 사용자가 button8로 시작하니까 기본 stop 유지
+                // ✅ TEST도 REAL처럼: 실시간 틱 수신 시작
+                try { _tickFromDb?.Stop(); } catch { }
 
                 try
                 {
                     if (_tickFromXing == null)
                     {
-                        Console.WriteLine("[BOOT][TEST] _tickFromXing is NULL (0230 not created) -> EnsureCoreModulesInitialized() 확인 필요");
+                        Console.WriteLine("[BOOT][TEST] _tickFromXing is NULL");
                     }
                     else
                     {
-                        // 혹시 남아있으면 정리 후 시작
                         try { _tickFromXing.Stop(); } catch { }
 
                         Console.WriteLine("[BOOT][TEST] calling _tickFromXing.Start now...");
@@ -469,6 +479,10 @@ namespace Exercise_1
                 {
                     Console.WriteLine("[BOOT][TEST] TickFromXing.Start EX: " + exTick);
                 }
+
+                // ✅ 1010 보유주수(증권사) 조회 -> textBox8
+                try { await LoadBrokerBalanceAsync(); }
+                catch (Exception ex1010) { Console.WriteLine("[BOOT][TEST][1010] FAIL: " + ex1010.Message); }
 
                 UpdateStatus($"TEST(모의서버) 준비 완료  {_0050_Real_Test환경결정.LogPrefix}  DB={DbPath}");
                 SetPanel2Color(Color.LightSkyBlue);
@@ -522,7 +536,6 @@ namespace Exercise_1
                 }
                 catch { }
 
-                // ✅ 0100 생성: 0050(static) 기반
                 _xingConn = new _0100_Xing_connect(
                     jmid: _0050_Real_Test환경결정.UserId,
                     jmauth: _0050_Real_Test환경결정.Password,
@@ -530,7 +543,6 @@ namespace Exercise_1
                     setPanel2Color: SetPanel2Color
                 );
 
-                // XING connect + 로그인 + 매매_Xing 생성
                 _mmXing = await _xingConn.ConnectAsync(currentShcode);
                 if (_mmXing == null) return;
 
@@ -567,6 +579,10 @@ namespace Exercise_1
 
                 try { await FetchDailyBalanceAsync(TimeSpan.FromSeconds(15)); } catch { }
 
+                // ✅ 1010 보유주수(증권사) 조회 -> textBox8
+                try { await LoadBrokerBalanceAsync(); }
+                catch (Exception ex1010) { Console.WriteLine("[BOOT][REAL][1010] FAIL: " + ex1010.Message); }
+
                 UpdateStatus("초기화 완료 " + _0050_Real_Test환경결정.LogPrefix);
                 SetPanel2Color(Color.LightGreen);
 
@@ -592,7 +608,6 @@ namespace Exercise_1
 
             try
             {
-                // 1) DB 파일 존재 확인
                 if (!File.Exists(DbPath))
                 {
                     UpdateStatus("DB 파일이 없습니다: " + DbPath);
@@ -603,7 +618,6 @@ namespace Exercise_1
 
                 _replayConnStr = ConnStr;
 
-                // 2) Repo / DbFuncs 재생성
                 try
                 {
                     var repos = RepoBootstrap.Create(DbPath);
@@ -625,7 +639,6 @@ namespace Exercise_1
                     Console.WriteLine("[ENV][DbFuncs] " + ex.Message);
                 }
 
-                // 3) DB -> listView 로드
                 try
                 {
                     _dbFuncs?.LoadKodexToListView(
@@ -649,7 +662,6 @@ namespace Exercise_1
                     Console.WriteLine("[ENV][LoadDailyBalanceToListView] " + ex.Message);
                 }
 
-                // 4) BandList/시작밴드 재로딩
                 try
                 {
                     BandList = 시작밴드Read.LoadBandsAndSetStartBand();
@@ -660,14 +672,10 @@ namespace Exercise_1
                     Console.WriteLine("[ENV][LoadBandsAndSetStartBand] " + ex.Message);
                 }
 
-                // 5) RichTextBoxBands는 ConnStr을 캡처하므로 재생성
-                try
-                {
-                    _rtbBands = new RichTextBoxBands(richTextBox1, ConnStr);
-                }
-                catch { }
+                // ✅ RichTextBoxBands는 1인수 생성자
+                try { _rtbBands = new RichTextBoxBands(richTextBox1); } catch { }
 
-                // 6) Tick_fromDB 재생성(ConnStr 캡처) + 이벤트 재연결
+                // Tick_fromDB 재생성(ConnStr 캡처) + 이벤트 재연결
                 try
                 {
                     if (_tickFromDb != null)
@@ -690,7 +698,7 @@ namespace Exercise_1
                     Console.WriteLine("[ENV][_0210_Tick_fromDB] " + ex.Message);
                 }
 
-                // 7) 자료수집도 ConnStr 기반이므로 재생성
+                // 자료수집도 ConnStr 기반이므로 재생성
                 try
                 {
                     if (_자료수집 != null)
@@ -701,16 +709,9 @@ namespace Exercise_1
                 }
                 catch { }
 
-                try
-                {
-                    _자료수집 = new 자료수집(ConnStr);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("[ENV][자료수집] " + ex.Message);
-                }
+                try { _자료수집 = new 자료수집(ConnStr); }
+                catch (Exception ex) { Console.WriteLine("[ENV][자료수집] " + ex.Message); }
 
-                // 8) 화면 상태 갱신
                 try { RefreshBandsAndTriggers(); } catch { }
 
                 UpdateStatus($"{_0050_Real_Test환경결정.LogPrefix} DB 적용완료: {DbPath}");
@@ -796,7 +797,10 @@ namespace Exercise_1
         {
             try
             {
-                try { _tickCalc2?.ResetTradePath(); } catch { }
+                // ✅ 옵션2 의존 제거: ResetTradePath 없음
+                try { UiPlannedBandsText = "(없음)"; } catch { } // 다음 틱에서 "(밴드Start)"로 자동 표시
+                try { _tickCalc2?.Clear(); } catch { }          // 0270 tickMin/Max 리셋(원하면 유지로 바꿔도 됨)
+
                 if (!IsHandleCreated) return;
 
                 Console.WriteLine($"[LOGIN][FILLED] side={sideKor} band={band} qty={deltaQty} price={price} execNo={execNo}");
@@ -825,10 +829,14 @@ namespace Exercise_1
                 Console.WriteLine("[LOGIN][FILLED] handler EX: " + ex);
             }
         }
+
+        // ─────────────────────────────────────────────
+        // ✅ UI Tick 처리: 1120 규칙대로 0270(UpdateByBand) 먼저, 그 다음 RichTextBox 렌더
+        // ─────────────────────────────────────────────
         private void HandleUiTick(double price)
         {
-            // ✅ UI 표시용 중복틱 방지(표시만)
-            if (!double.IsNaN(_lastUiTickPrice) && Math.Abs(_lastUiTickPrice - price) < double.Epsilon)
+            if (!double.IsNaN(_lastUiTickPrice) &&
+                Math.Abs(_lastUiTickPrice - price) < double.Epsilon)
                 return;
 
             _lastUiTickPrice = price;
@@ -843,32 +851,57 @@ namespace Exercise_1
 
                     textBox1.Text = priceInt.ToString(CultureInfo.InvariantCulture);
 
-                    // ✅ 0270 먼저 호출: tradeBandText를 먼저 "갱신"해야 아래 RenderDesc가 최신 값을 출력한다.
+                    int startBandNow = (this.CurrentStartBand > 0)
+                        ? this.CurrentStartBand
+                        : Login.시작밴드변수;
+
+                    // ✅ 거래밴드 기본 표시: (없음)이면 시작밴드를 보여준다
+                    try
+                    {
+                        if (string.IsNullOrWhiteSpace(UiPlannedBandsText) || UiPlannedBandsText.Trim() == "(없음)")
+                            UiPlannedBandsText = "(밴드" + startBandNow.ToString(CultureInfo.InvariantCulture) + ")";
+                    }
+                    catch { }
+
+                    // ✅ 0270 먼저 호출(1120)
                     if (_tickCalc2 != null)
                     {
-                        int startBandNow = (this.CurrentStartBand > 0) ? this.CurrentStartBand : Login.시작밴드변수;
+                        var br = Login.BandList
+                            .FirstOrDefault(b => b != null && b.Band == startBandNow);
 
-                        // ✅ bandNo는 FocusBand 우선(있으면), 없으면 startBandNow
-                        int bandNoForTrade = (Login.FocusBand > 0) ? Login.FocusBand : startBandNow;
-
-                        var br = Login.BandList.FirstOrDefault(b => b != null && b.Band == startBandNow);
                         if (br != null)
                         {
                             _tickCalc2.UpdateByBand(
                                 currentPrice: priceInt,
                                 팔가격: br.팔가격,
-                                살가격: br.살가격,
-                                bandNo: bandNoForTrade
+                                살가격: br.살가격
                             );
                         }
                     }
 
+                    Console.WriteLine($"[TICK] price={priceInt} startBand={startBandNow} tradeBands={UiPlannedBandsText}");
+                    // ===============================
+                    // 🔎 DEBUG: 시작밴드 / 현밴드 확인
+                    // ===============================
+                    if (!_debugBandMsgShown)
+                    {
+                        _debugBandMsgShown = true;
+
+                        MessageBox.Show(
+                            this,
+                            $"시작밴드: {startBandNow}\r\n현밴드: {UiPlannedBandsText}",
+                            "밴드 확인",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
+                    }
                     // ✅ 그 다음에 RichTextBox 렌더
                     OnTickArrived(priceInt);
                 }
                 catch { }
             }));
         }
+
         private void OnTickArrived(int price)
         {
             현재가변수 = price;
@@ -885,10 +918,7 @@ namespace Exercise_1
 
             try
             {
-                // ✅ 거래밴드 문자열(옵션2)
-                string tradeText = (_tickCalc2 != null) ? _tickCalc2.TradeBandsPassedText : "(없음)";
-
-                _rtbBands?.RenderDesc(price, prevValues, tradeText);
+                _rtbBands?.RenderDesc(price, prevValues);
             }
             catch { }
         }
@@ -1030,7 +1060,6 @@ namespace Exercise_1
             {
                 try
                 {
-                    // OrdNo만 사용 (OrderAck에 SideKor/Band/OrderQty가 없으므로)
                     var ordNoRaw = (ack.OrderNo ?? "").Trim();
 
                     Debug.WriteLine($"[주문전송확인] OrdNo={ordNoRaw} Msg={ack.Message}");
@@ -1042,7 +1071,6 @@ namespace Exercise_1
                         return;
                     }
 
-                    // ✅ 0550(잠금)에 저장된 side/band/qty를 그대로 사용
                     var gate = Login.TradeWait;
                     if (gate == null)
                     {
@@ -1050,7 +1078,6 @@ namespace Exercise_1
                     }
                     else
                     {
-                        // (A안 핵심) OrdNo를 잠금에 묶어준다
                         gate.MarkAccepted(
                             ordNo: ordNo,
                             orderQty: gate.LockedOrderQty,
@@ -1059,7 +1086,6 @@ namespace Exercise_1
                         );
                     }
 
-                    // ✅ 0600 등록
                     var map = Login.OrdMap;
                     if (map == null)
                     {
@@ -1074,7 +1100,6 @@ namespace Exercise_1
                         map.Register(sideKor: side, band: band, ordNo: ordNo, orderQty: qty);
                     }
 
-                    // 기존 UI 갱신 유지
                     if (_lv3Manager != null)
                         await _lv3Manager.ReloadAsync();
                 }
@@ -1146,15 +1171,12 @@ namespace Exercise_1
 
         private async void button3_Click(object sender, EventArgs e)
         {
-            // =========================================================
-            // 1️⃣ t0424 추정순자산 조회 (button3 내부 로컬 함수)
-            // =========================================================
             async Task<long> FetchSunamtAsync(TimeSpan timeout)
             {
                 string resPath = @"C:\LS_SEC\xingAPI\Res\t0424.res";
 
                 string accno = (Actno ?? "").Trim();
-                string passwd = (JMpass ?? "").Trim(); // 현재 시스템 기준
+                string passwd = (JMpass ?? "").Trim();
 
                 if (string.IsNullOrWhiteSpace(accno))
                     throw new Exception("계좌번호(Actno)가 비어있습니다.");
@@ -1197,7 +1219,6 @@ namespace Exercise_1
                     q.ReceiveData += onReceiveData;
                     q.ReceiveMessage += onReceiveMsg;
 
-                    // InBlock
                     q.SetFieldData("t0424InBlock", "accno", 0, accno);
                     q.SetFieldData("t0424InBlock", "passwd", 0, passwd);
                     q.SetFieldData("t0424InBlock", "prcgb", 0, "1");
@@ -1227,9 +1248,6 @@ namespace Exercise_1
                 }
             }
 
-            // =========================================================
-            // 2️⃣ 조회 실행 + MessageBox 표시
-            // =========================================================
             try
             {
                 long sunamt = await FetchSunamtAsync(TimeSpan.FromSeconds(10));
@@ -1253,9 +1271,6 @@ namespace Exercise_1
                 );
             }
 
-            // =========================================================
-            // 3️⃣ 기존 button3 Clear 동작 유지
-            // =========================================================
             try
             {
                 try { richTextBox1.Clear(); } catch { }
@@ -1272,6 +1287,7 @@ namespace Exercise_1
             catch { }
 
             try { _tickCalc2?.Clear(); } catch { }
+            try { UiPlannedBandsText = "(없음)"; } catch { }
         }
 
         private void button4_Click(object sender, EventArgs e)
@@ -1404,7 +1420,6 @@ namespace Exercise_1
         // 콘솔 리다이렉트
         private void RedirectConsoleToFile()
         {
-            // Apply 전일 수 있으므로 fallback DB를 사용해 로그 폴더 결정
             string dbPath = null;
             try
             {
@@ -1487,21 +1502,18 @@ namespace Exercise_1
 
         private void button7_Click(object sender, EventArgs e)
         {
-            // 계좌번호: 0050에서 확정된 값을 사용
             string acnt = (Actno ?? "").Trim();
 
-            // 계좌비번: REAL=Login.JMpass, TEST=0050 쪽(현재 코드에서는 CertPw를 TEST 비번으로 사용)
             string pwd = "";
             try
             {
                 if (_0050_Real_Test환경결정.IsTest)
-                    pwd = (_0050_Real_Test환경결정.CertPw ?? "").Trim();  // ✅ TEST 비번(0050)
+                    pwd = (_0050_Real_Test환경결정.CertPw ?? "").Trim();
                 else
-                    pwd = (JMpass ?? "").Trim();                            // ✅ REAL 비번(Login.cs)
+                    pwd = (JMpass ?? "").Trim();
             }
             catch
             {
-                // fallback: 그래도 REAL 기본
                 pwd = (JMpass ?? "").Trim();
             }
 
@@ -1515,10 +1527,41 @@ namespace Exercise_1
 
             _cashQuery.Request(acnt, pwd);
         }
+
+        // ─────────────────────────────────────────────
+        // ✅ 1010(CSPAQ12300) 보유주수 -> textBox8
+        // ─────────────────────────────────────────────
+        private async Task LoadBrokerBalanceAsync()
+        {
+            using (var bal = new _1010_증권사보유주수())
+            {
+                string account = (Actno ?? "").Trim();
+
+                string pwd = "";
+                try
+                {
+                    if (_0050_Real_Test환경결정.IsTest)
+                        pwd = (_0050_Real_Test환경결정.CertPw ?? "").Trim();
+                    else
+                        pwd = (JMpass ?? "").Trim();
+                }
+                catch
+                {
+                    pwd = (JMpass ?? "").Trim();
+                }
+
+                string shcode = (currentShcode ?? "069500").Trim();
+
+                long qty = await bal.RequestAsync(account, pwd, shcode);
+
+                try { textBox8.Text = qty.ToString("N0"); } catch { }
+                Console.WriteLine("[1010] 보유수량 = " + qty);
+            }
+        }
+
     }
 }
 
-// 2026-02-10 46837
 //h 2026-02-01 73918
 //h// ✅ REAL 기본값(기존 변수는 유지하되, 실제 사용은 0050에서만)
 //hpublic static string JMid = "cds002";
@@ -1527,3 +1570,10 @@ namespace Exercise_1
 
 //h// ✅ 계좌비번(4자리)
 //hpublic static string JMpass = "1908";
+
+// ✅ TEST 
+// LoginPw = "hanjm12";
+// CertPw = "1908hanjm!!";
+// Account = "55504613901";
+
+// 2026-02-11 48219
