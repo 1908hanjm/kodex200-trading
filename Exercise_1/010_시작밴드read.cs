@@ -27,15 +27,16 @@ namespace Exercise_1
                산가격,
                살가격,
                qty,
-               sina,
                from_band,
                from_qty,
+               extra_qty,
                진짜산가격
         FROM kodex200_new
         ORDER BY band;
     ", conn))
             {
                 conn.Open();
+                DB_Control.EnsureExtraQtyColumn(conn);
                 using (var r = cmd.ExecuteReader())
                 {
                     while (r.Read())
@@ -50,9 +51,9 @@ namespace Exercise_1
                             살가격 = r.IsDBNull(3) ? 0 : r.GetInt64(3),
 
                             Qty = r.IsDBNull(4) ? 0 : r.GetInt64(4),
-                            Sina = r.IsDBNull(5) ? 0 : r.GetInt64(5),
-                            From_Band = r.IsDBNull(6) ? 0 : r.GetInt32(6),
-                            From_Qty = r.IsDBNull(7) ? 0 : r.GetInt64(7),
+                            From_Band = r.IsDBNull(5) ? 0 : r.GetInt32(5),
+                            From_Qty = r.IsDBNull(6) ? 0 : r.GetInt64(6),
+                            Extra_Qty = r.IsDBNull(7) ? 0 : r.GetInt64(7),
                             진짜산가격 = r.IsDBNull(8) ? 0 : r.GetInt64(8)
                         });
                     }
@@ -61,7 +62,6 @@ namespace Exercise_1
 
             return list;
         }
-
 
         /// <summary>
         /// 시작밴드 계산
@@ -99,3 +99,4 @@ namespace Exercise_1
         }
     }
 }
+// 2026-03-11 74628

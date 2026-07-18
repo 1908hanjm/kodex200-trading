@@ -16,7 +16,6 @@ namespace Exercise_1
         public int High { get; set; }
         public int Low { get; set; }
         public int Qty { get; set; }
-        public int Sina { get; set; }
     }
 
     public interface ICycleLogRepo

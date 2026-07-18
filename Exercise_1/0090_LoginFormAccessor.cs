@@ -25,6 +25,18 @@ namespace Exercise_1
                 return null;
             }
         }
+
+        public static Login TryGetLogin()
+        {
+            try
+            {
+                return _current;
+            }
+            catch
+            {
+                return null;
+            }
+        }
     }
 }
 

@@ -13,17 +13,16 @@ namespace Exercise_1
         public long 산가격 { get; set; }           // 매수 주문가 (실제 주문 넣는 가격)
         public long 살가격 { get; set; }           // 매수 기준선 (Low 개념)
 
-        // ★ 수량/목표
+        // ★ 실제 보유 수량
         public long Qty { get; set; }             // 보유수량
-        public long Sina { get; set; }             // 목표수량
 
-        // ★ 자금 순환 추적
+        // ★ 체결 연결 정보
         public long From_Qty { get; set; }
+        public long Extra_Qty { get; set; }
         public int From_Band { get; set; }
 
         // ★ 실제 매수 체결 단가
         public long 진짜산가격 { get; set; }
-
         // ───────────────────────────────────────
         // ▪ 기존 코드 호환용 Alias 프로퍼티
         //   (여러 파일에서 High / Low를 그대로 써도 됨)

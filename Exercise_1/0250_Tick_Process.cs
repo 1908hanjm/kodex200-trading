@@ -28,21 +28,52 @@
 // ✅ 이번 수정(철학 반영 핵심):
 // - 세션 진행 중, 가격이 "LastBreakBand 기준"으로 다시 밴드 범위(IN-BAND)로 복귀하면
 //   => 그 돌파 시도를 접고(세션 종료), 상태를 즉시 초기화한다.
-//   (textbox 2/3/4/7 = 0 처리는 0270(UpdateByBand)가 IN-BAND에서 이미 수행 중)
+//
+// ✅ (이번 작업 핵심):
+// - "그림(UI 갭)"은 0270이 히스토리로 계산하지 않는다.
+// - 0250이 세션 segMin/segMax/gap(=judgeGap)을 계산하여 0270에 전달한다.
 // ------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.Rebar;
 
 namespace Exercise_1
 {
     public sealed class _0250_Tick_Process
     {
+        // ================================
+        // ✅ UI Sink (0270이 구현)
+        // - 0250이 세션 기준 값을 만들어서 전달
+        // ================================
+        public interface ISessionUiSink
+        {
+            void ShowInBand(long currentPrice);
+            void ShowSession(SessionUiState s);
+            void ResetAll(long currentPrice);
+        }
+
+        public sealed class SessionUiState
+        {
+            public string Dir;          // "BUY" / "SELL"
+            public int StartBandK;      // 돌파 시작 밴드K
+            public int LastBreakBand;   // 세션 extrema 기준으로 계산된 lastBreakBand
+            public long CurrentPrice;   // cur
+            public long SegMin;         // 세션 최저
+            public long SegMax;         // 세션 최고
+            public int KK;              // 꺾임
+            public long Gap;            // 세션 기준 gap (BUY: cur-segMin, SELL: segMax-cur)
+            public bool IsTurn;         // 꺾임 충족 여부
+            public bool FireAllowed;    // LastBreakBand 기준 OUT 유지 여부
+        }
+        private DataTable _bands;
         private readonly Login _login;
+        private readonly ISessionUiSink _ui; // ✅ 0270 주입(권장)
 
         // 동시 호출 방지(필수)
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
@@ -62,6 +93,8 @@ namespace Exercise_1
         // 세션 extrema (세션 시작 이후 누적)
         private long _segMax = 0;
         private long _segMin = 0;
+        private DateTime _lastSessionKeepLogAtKst = DateTime.MinValue;
+        private string _lastSessionKeepSummary = "";
 
         // 방향 표시용
         private long _prevPrice = 0;
@@ -70,13 +103,29 @@ namespace Exercise_1
         private const string SIDE_SELL = "SELL";
         private const string SIDE_BUY = "BUY";
 
-        public _0250_Tick_Process(Login login)
+        // ✅ [수정] 동일 breakout zone 재발사 방지 필드
+        // 마지막으로 FIRE된 방향과 밴드K를 기억해서
+        // 가격이 아직 동일 breakout zone 안에 있는 동안 재발사를 금지한다.
+        private int _lastFiredBandK = 0;          // 마지막 FIRE 시점의 _돌파밴드K
+        private 돌파방향 _lastFiredDir = 돌파방향.없음; // 마지막 FIRE 방향
+
+        // ✅ 기존 생성자 유지
+        public _0250_Tick_Process(Login login) : this(login, null) { }
+
+        // ✅ 권장: UI(0270)를 같이 주입
+        public _0250_Tick_Process(Login login, ISessionUiSink uiSink)
         {
             _login = login ?? throw new ArgumentNullException(nameof(login));
+            _ui = uiSink; // null 허용
         }
 
         public async Task ProcessTickAsync(double price)
         {
+            // Console.WriteLine("[0250 ENTRY] price=" + price + " time=" + DateTime.Now.ToString("HH:mm:ss.fff"));
+
+            var sb = GetBandByNo(GetStartBandFromBandList());
+            // if (sb != null)
+            //    Console.WriteLine("[0250 BAND] startBand=" + sb.Band + " 팔가격=" + sb.팔가격 + " 살가격=" + sb.살가격);
             await _gate.WaitAsync().ConfigureAwait(false);
             try
             {
@@ -99,11 +148,35 @@ namespace Exercise_1
                 // ─────────────────────────────────────────────
                 int startBandNow = GetStartBandFromBandList();
                 if (startBandNow <= 0)
+                {
+                    _ui?.ResetAll(cur);
                     return;
+                }
 
                 var startBand = GetBandByNo(startBandNow);
                 if (startBand == null)
+                {
+                    _ui?.ResetAll(cur);
                     return;
+                }
+
+                // ✅ [수정] startBand가 변경됐으면(체결 후 밴드 이동)
+                // lastFired 기록을 초기화하여 새 밴드에서의 돌파를 허용한다.
+                // lastFiredBandK != startBandNow 이면 다른 밴드로 이동한 것이므로 리셋.
+                if (_lastFiredBandK > 0 && _lastFiredBandK != startBandNow)
+                {
+                    Debug.WriteLine($"[0250][BAND MOVED] startBand {_lastFiredBandK} -> {startBandNow} -> lastFired cleared");
+                    _lastFiredDir = 돌파방향.없음;
+                    _lastFiredBandK = 0;
+                }
+
+                // ✅ 돌파 전에도 그림은 "IN-BAND 리셋/현재가" 표시(원하면 주석 처리 가능)
+                bool inBandNow = (cur <= Math.Max(startBand.팔가격, startBand.살가격) &&
+                                  cur >= Math.Min(startBand.팔가격, startBand.살가격));
+                if (_돌파방향 == 돌파방향.없음 && inBandNow)
+                {
+                    _ui?.ShowInBand(cur);
+                }
 
                 // ─────────────────────────────────────────────
                 // 3) 돌파(state) 판정 (세션 시작/전환)
@@ -115,14 +188,43 @@ namespace Exercise_1
                 {
                     if (isSellBreak)
                     {
+                        // ✅ [수정] 동일 breakout zone 재발사 방지
+                        // 마지막 FIRE가 매도이고 동일 밴드K에서 아직 OUT 상태이면
+                        // 새 SELL 세션 생성을 금지한다.
+                        if (_lastFiredDir == 돌파방향.매도 && _lastFiredBandK == startBandNow)
+                        {
+                            string allowLog =
+                                $"[0250][SELL][OUT_REENTER_ALLOWED] startBand={startBandNow} cur={cur} highBand={startBand.팔가격}";
+                            Console.WriteLine(allowLog);
+                            Debug.WriteLine(allowLog);
+
+                            string skipLog =
+                                $"[0250][SELL][REFIRE_BLOCK_SKIPPED] reason=session_missing_out_state startBand={startBandNow}";
+                            Console.WriteLine(skipLog);
+                            Debug.WriteLine(skipLog);
+                        }
                         StartBreakSession(돌파방향.매도, startBandNow, cur);
                     }
                     else if (isBuyBreak)
                     {
+                        // BUY는 crossing 이벤트가 아니라 OUT 상태이면 같은 밴드도 새 세션을 허용한다.
+                        if (_lastFiredDir == 돌파방향.매수 && _lastFiredBandK == startBandNow)
+                        {
+                            Debug.WriteLine(
+                                $"[0250][BUY_REFIRE_ALLOW] band={startBandNow} price={cur} low={startBand.살가격} reason=OUT_STATE");
+                        }
                         StartBreakSession(돌파방향.매수, startBandNow, cur);
                     }
                     else
                     {
+                        // ✅ [수정] 가격이 IN-BAND로 돌아왔으면 lastFired 기록 초기화
+                        // (다음 번 같은 방향 돌파는 새로운 breakout으로 허용)
+                        if (_lastFiredDir != 돌파방향.없음)
+                        {
+                            Debug.WriteLine($"[0250][REFIRE RESET] IN-BAND cur={cur} -> lastFired cleared");
+                            _lastFiredDir = 돌파방향.없음;
+                            _lastFiredBandK = 0;
+                        }
                         // 돌파 전: 로그 출력 안 함(확정)
                         return;
                     }
@@ -132,10 +234,16 @@ namespace Exercise_1
                     // 세션 진행 중: 반대 방향 OUT이면 세션을 새로 시작(방향 전환)
                     if (_돌파방향 == 돌파방향.매수 && isSellBreak)
                     {
+                        // 반대 방향 전환이므로 lastFired 리셋 후 새 세션 시작
+                        _lastFiredDir = 돌파방향.없음;
+                        _lastFiredBandK = 0;
                         StartBreakSession(돌파방향.매도, startBandNow, cur);
                     }
                     else if (_돌파방향 == 돌파방향.매도 && isBuyBreak)
                     {
+                        // 반대 방향 전환이므로 lastFired 리셋 후 새 세션 시작
+                        _lastFiredDir = 돌파방향.없음;
+                        _lastFiredBandK = 0;
                         StartBreakSession(돌파방향.매수, startBandNow, cur);
                     }
                     // 같은 방향이면 세션 유지(별도 세팅 금지)
@@ -144,17 +252,29 @@ namespace Exercise_1
                 // ─────────────────────────────────────────────
                 // 4) segMax / segMin 누적 갱신 (세션 유지 동안)
                 // ─────────────────────────────────────────────
+                long oldSegMax = _segMax;
+                long oldSegMin = _segMin;
                 if (cur > _segMax) _segMax = cur;
                 if (cur < _segMin) _segMin = cur;
 
                 long segMax = _segMax;
                 long segMin = _segMin;
 
+                if (_돌파방향 == 돌파방향.매도 && segMax != oldSegMax)
+                {
+                    WriteSessionLog($"[0250][SELL][SESSION_MAX] old={oldSegMax} new={segMax} startBand={_돌파밴드K} cur={cur}");
+                }
+                else if (_돌파방향 == 돌파방향.매수 && segMin != oldSegMin)
+                {
+                    WriteSessionLog($"[0250][BUY][SESSION_MIN] old={oldSegMin} new={segMin} startBand={_돌파밴드K} cur={cur}");
+                }
+                else
+                {
+                    WriteSessionKeepSummary(cur, segMin, segMax);
+                }
+
                 // ─────────────────────────────────────────────
                 // 4.5) (철학 반영) "LastBreakBand 기준" IN-BAND 복귀 시 세션 종료
-                //  - 세션은 밴드 OUT 상태에서만 의미가 있다.
-                //  - 다시 밴드 범위로 들어오면(OUT이 아니면) 그 돌파 시도를 접고 초기화.
-                //  - textbox 0 세팅은 0270이 IN-BAND에서 이미 수행한다.
                 // ─────────────────────────────────────────────
                 int lastBreakBandForReturn = ComputeLastBreakBandByExtrema(_돌파방향, _돌파밴드K, segMin, segMax);
                 var lastBandForReturn = GetBandByNo(lastBreakBandForReturn);
@@ -166,7 +286,9 @@ namespace Exercise_1
 
                     if (returnedToInBandByLast)
                     {
+                        // ✅ 세션 포기: UI도 세션 리셋
                         ResetAfterAbort($"INBAND_RETURN lastBand={lastBreakBandForReturn} cur={cur}");
+                        _ui?.ShowInBand(cur);
                         return;
                     }
                 }
@@ -179,36 +301,40 @@ namespace Exercise_1
                     (_돌파방향 == 돌파방향.매수 && cur >= segMin + kk);
 
                 // ─────────────────────────────────────────────
-                // 6) TRACE (돌파 이후만 출력)
+                // 6) UI "그림" 갱신: ✅ 세션 기준으로만 표시
                 // ─────────────────────────────────────────────
-                var kBand = Login.BandList.FirstOrDefault(b => b != null && b.Band == _돌파밴드K);
-                long edgeMax = (kBand != null) ? kBand.팔가격 : 0;
-                long edgeMin = (kBand != null) ? kBand.살가격 : 0;
+                int lastBreakBandForUi = ComputeLastBreakBandByExtrema(_돌파방향, _돌파밴드K, segMin, segMax);
+                var lastBandUi = GetBandByNo(lastBreakBandForUi);
 
-                long tickMax = segMax;
-                long tickMin = segMin;
+                bool fireAllowedNow = false;
+                if (lastBandUi != null)
+                {
+                    fireAllowedNow =
+                        (_돌파방향 == 돌파방향.매수 && cur < lastBandUi.살가격) ||
+                        (_돌파방향 == 돌파방향.매도 && cur > lastBandUi.팔가격);
+                }
 
-                long judgeGap = (_돌파방향 == 돌파방향.매수)
-                    ? (cur - tickMin)
-                    : (tickMax - cur);
+                long gapSession =
+                    (_돌파방향 == 돌파방향.매수) ? (cur - segMin) : (segMax - cur);
+                if (gapSession < 0) gapSession = -gapSession;
 
-                long viewGap = Math.Abs(judgeGap);
-
-                string 방향표시 = GetArrow(cur);
-
-                // 원하면 주석 해제
-                //if (_돌파방향 == 돌파방향.매도)
-                //{
-                //    Console.WriteLine(
-                //        $"Band={_돌파밴드K} Max={edgeMax:#,0} 방향={방향표시} 현재가={cur:#,0} 틱Max={tickMax:#,0} 꺽임={kk} 갭={viewGap:#,0}"
-                //    );
-                //}
-                //else
-                //{
-                //    Console.WriteLine(
-                //        $"Band={_돌파밴드K} Min={edgeMin:#,0} 방향={방향표시} 현재가={cur:#,0} 틱Min={tickMin:#,0} 꺽임={kk} 갭={viewGap:#,0}"
-                //    );
-                //}
+                if (_ui != null && _돌파방향 != 돌파방향.없음)
+                {
+                    var s = new SessionUiState
+                    {
+                        Dir = (_돌파방향 == 돌파방향.매수) ? SIDE_BUY : SIDE_SELL,
+                        StartBandK = _돌파밴드K,
+                        LastBreakBand = lastBreakBandForUi,
+                        CurrentPrice = cur,
+                        SegMin = segMin,
+                        SegMax = segMax,
+                        KK = kk,
+                        Gap = gapSession,
+                        IsTurn = isTurn,
+                        FireAllowed = fireAllowedNow
+                    };
+                    _ui.ShowSession(s);
+                }
 
                 // ─────────────────────────────────────────────
                 // 7) FIRE (turn + FIRE 허용 조건(LastBreakBand 기준))
@@ -233,6 +359,12 @@ namespace Exercise_1
                 // ✅ 0300의 "배치 실행"을 1번만 호출한다.
                 if (_돌파방향 == 돌파방향.매수)
                 {
+                    // ✅ [수정] FIRE 직전에 lastFired 기록 (ResetAfterTrade 전에!)
+                    // 이렇게 해야 Reset 후에도 재발사 방지 기준값이 남는다.
+                    _lastFiredDir = 돌파방향.매수;
+                    _lastFiredBandK = _돌파밴드K;
+                    Debug.WriteLine($"[0250][FIRE BUY] lastFiredDir=매수 lastFiredBandK={_lastFiredBandK} cur={cur}");
+
                     // BUY 배치: startBandAtBreak ~ lastBreakBand (오름차순)
                     밴드매칭.실행배치(
                         side: SIDE_BUY,
@@ -243,23 +375,46 @@ namespace Exercise_1
                     );
 
                     ResetAfterTrade("BUY");
+                    _ui?.ShowInBand(cur); // 체결 후 세션 종료(그림 리셋)
                 }
                 else if (_돌파방향 == 돌파방향.매도)
                 {
-                    // 매도는 기존 구현을 보수적으로 유지하되, 배치로만 보낸다.
-                    int 현재밴드 = FindBandByPriceInMemory(cur);
-                    int endBand = Math.Max(현재밴드 + 1, 1);
+                    // ⚠️ 기존 endBand 계산은 정책과 불일치 소지가 있었음.
+                    // ✅ 세션 기반 "lastBreakBand"를 기준으로 SELL도 대칭 처리 권장:
+                    //    (from=startBandAtBreak, to=lastBreakBand)
+                    //    0300(밴드매칭) 내부에서 SELL은 내림차순으로 처리하도록 되어 있어야 한다.
+                    //
+                    // ✅ [수정 2026-05-14] SELL toBand 하한 클램프
+                    // SELL 범위는 반드시 startBandNow 이상(번호 기준 >=)이어야 한다.
+                    // lastBreakBand < startBandNow 인 경우: 현재 startBand보다 낮은 밴드(다음 startBand 후보)까지
+                    // 팔아버리는 것이므로 startBandNow로 클램프한다.
+                    // 예) startBandNow=35, lastBreakBand=34 → toBand=35 (Queue=[35]만 생성)
+                    int sellToBand = lastBreakBand;
+                    if (sellToBand < startBandNow)
+                    {
+                        Debug.WriteLine(
+                            $"[0250][SELL][CLAMP] lastBreakBand={lastBreakBand} < startBandNow={startBandNow}" +
+                            $" -> toBand clamped to {startBandNow}");
+                        sellToBand = startBandNow;
+                    }
 
-                    // SELL 배치: startBandAtBreak ~ endBand (내림차순)
+                    // ✅ [수정] FIRE 직전에 lastFired 기록 (ResetAfterTrade 전에!)
+                    _lastFiredDir = 돌파방향.매도;
+                    _lastFiredBandK = _돌파밴드K;
+                    Debug.WriteLine($"[0250][FIRE SELL] lastFiredDir=매도 lastFiredBandK={_lastFiredBandK} cur={cur}");
+                    Console.WriteLine(
+                        $"[0250][SELL][FIRE] startBand={_돌파밴드K} cur={cur} tickMax={segMax} kk={kk}");
+
                     밴드매칭.실행배치(
                         side: SIDE_SELL,
                         firePrice: cur,
                         fromBand: _startBandAtBreak,
-                        toBand: endBand,
+                        toBand: sellToBand,
                         startBandNow: startBandNow
                     );
 
                     ResetAfterTrade("SELL");
+                    _ui?.ShowInBand(cur); // 체결 후 세션 종료(그림 리셋)
                 }
             }
             catch (Exception ex)
@@ -295,13 +450,41 @@ namespace Exercise_1
             _hasPrev = true;
 
             Debug.WriteLine($"[0250] StartBreakSession dir={dir} K={startBandNow} cur={cur}");
+            if (dir == 돌파방향.매수)
+                WriteSessionLog($"[0250][BUY][SESSION_START] startBand={startBandNow} cur={cur} segMin={_segMin}");
+            else if (dir == 돌파방향.매도)
+            {
+                WriteSessionLog($"[0250][SELL][SESSION_START] startBand={startBandNow} cur={cur} segMax={_segMax}");
+            }
+        }
+
+        private void WriteSessionKeepSummary(long cur, long segMin, long segMax)
+        {
+            if (_돌파방향 == 돌파방향.없음)
+                return;
+
+            DateTime now = KoreaTime.NowKst();
+            if ((now - _lastSessionKeepLogAtKst).TotalSeconds < 5)
+                return;
+
+            string side = _돌파방향 == 돌파방향.매수 ? SIDE_BUY : SIDE_SELL;
+            string summary = $"[0250][{side}][SESSION_KEEP] startBand={_돌파밴드K} cur={cur} segMin={segMin} segMax={segMax}";
+            if (string.Equals(summary, _lastSessionKeepSummary, StringComparison.Ordinal))
+                return;
+
+            _lastSessionKeepLogAtKst = now;
+            _lastSessionKeepSummary = summary;
+            WriteSessionLog(summary);
+        }
+
+        private static void WriteSessionLog(string message)
+        {
+            Console.WriteLine(message);
+            Debug.WriteLine(message);
         }
 
         // ─────────────────────────────────────────────
         // LastBreakBand 계산 (BUY/SELL 대칭)
-        //  - 밴드 번호 규칙: 번호 증가 = 가격 하락
-        //  - BUY(하락): segMin이 더 내려가면(살가격 아래) lastBand는 번호 증가 방향으로 확장
-        //  - SELL(상승): segMax가 더 올라가면(팔가격 위) lastBand는 번호 감소 방향으로 확장
         // ─────────────────────────────────────────────
         private int ComputeLastBreakBandByExtrema(돌파방향 dir, int startBandK, long segMin, long segMax)
         {
@@ -317,7 +500,6 @@ namespace Exercise_1
                     var br = GetBandByNo(b);
                     if (br == null) break;
 
-                    // segMin이 해당 밴드의 살가격 아래로 내려간 상태면 그 밴드는 "돌파된 상태"로 본다
                     if (segMin < br.살가격)
                         last = b;
                     else
@@ -330,13 +512,12 @@ namespace Exercise_1
             {
                 int last = startBandK;
 
-                // startBandK부터 위(번호 감소)로 스캔 (상승 돌파는 band 번호가 작아지는 방향)
+                // startBandK부터 위(번호 감소)로 스캔
                 for (int b = startBandK; b >= 1; b--)
                 {
                     var br = GetBandByNo(b);
                     if (br == null) break;
 
-                    // segMax가 해당 밴드의 팔가격 위로 올라간 상태면 그 밴드는 "돌파된 상태"로 본다
                     if (segMax > br.팔가격)
                         last = b;
                     else
@@ -372,8 +553,7 @@ namespace Exercise_1
         }
 
         // ─────────────────────────────────────────────
-        // Reset (철학 반영: IN-BAND 복귀 등으로 세션 포기)
-        // - UI textbox 0 세팅은 0270이 IN-BAND에서 이미 수행하므로 여기서는 "세션 상태"만 정리
+        // Reset (세션 포기)
         // ─────────────────────────────────────────────
         private void ResetAfterAbort(string why)
         {
@@ -391,7 +571,12 @@ namespace Exercise_1
             _hasPrev = false;
             _prevPrice = 0;
 
-            Debug.WriteLine($"[0250] ResetAfterAbort ({why})");
+            // ✅ [수정] 세션 포기(Abort) 시에는 lastFired도 초기화
+            // (IN-BAND 복귀로 세션이 취소된 것이므로 다음 돌파는 새 breakout으로 허용)
+            _lastFiredDir = 돌파방향.없음;
+            _lastFiredBandK = 0;
+
+            Debug.WriteLine($"[0250] ResetAfterAbort ({why}) -> lastFired cleared");
         }
 
         // ─────────────────────────────────────────────
@@ -417,17 +602,6 @@ namespace Exercise_1
             return Login.BandList.FirstOrDefault(b => b != null && b.Band == band);
         }
 
-        private int FindBandByPriceInMemory(long price)
-        {
-            // price가 밴드 구간 "안"에 있을 수도/없을 수도 있음
-            var b = Login.BandList
-                .Where(x => x != null && price >= x.살가격 && price <= x.팔가격)
-                .OrderBy(x => x.Band)
-                .LastOrDefault();
-
-            return b?.Band ?? -1;
-        }
-
         private string GetArrow(long cur)
         {
             if (!_hasPrev)
@@ -445,6 +619,18 @@ namespace Exercise_1
             _prevPrice = cur;
             return a;
         }
+        public void UpdateBands(DataTable bands)
+        {
+            try
+            {
+                _bands = bands;
+                Console.WriteLine("[0250] Bands updated");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[0250][ERROR] " + ex.Message);
+            }
+        }
     }
 }
-// 2026-02-09 73914
+// 2026-02-21 41837
