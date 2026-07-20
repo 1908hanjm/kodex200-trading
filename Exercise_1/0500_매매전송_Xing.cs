@@ -168,7 +168,7 @@ namespace Exercise_1
                     {
                         cashResult = lastResult;
                         usedCache  = true;
-                        Write("[CASH_GUARD][CACHE_HIT] agoMs=" + (int)agoMs +
+                        Write("[CASH_GUARD][CACHE_HIT] source=1000_LOCAL agoMs=" + (int)agoMs +
                               " thresholdMs=" + FRESH_THRESHOLD_MS +
                               " cachedOrderableCash=" + lastResult.OrderableCash +
                               " requiredCash=" + requiredCash +
@@ -182,6 +182,34 @@ namespace Exercise_1
                 catch (Exception exCache)
                 {
                     Write("[CASH_GUARD][CACHE_CHECK_EX] " + exCache.Message + " → 실조회 진행");
+                }
+
+                // ✅ [P1-FIX 2026-07-20] cash1000(1000_현금주문가능금액)의 로컬 캐시가 MISS여도,
+                // 0900.QueryAllAsync가 방금 CSPAQ12200을 조회해 성공했다면 그 결과가
+                // Cspaq12200SharedCache에 남아 있으므로 재조회 없이 재사용한다.
+                if (!usedCache)
+                {
+                    long sharedCash;
+                    double sharedAgoMs;
+                    if (Cspaq12200SharedCache.TryGetFresh(FRESH_THRESHOLD_MS, out sharedCash, out sharedAgoMs))
+                    {
+                        cashResult = OrderableCashQueryResult.From(
+                            sharedCash > 0 ? OrderableCashResultKind.Success : OrderableCashResultKind.ActualZeroCash,
+                            sharedCash, 0, "CACHED_FROM_0900");
+                        usedCache = true;
+                        cacheAgoMs = sharedAgoMs;
+                        cachedOrderableCash = sharedCash;
+
+                        Write("[CASH_GUARD][CACHE_HIT] source=0900_SHARED agoMs=" + (int)sharedAgoMs +
+                              " thresholdMs=" + FRESH_THRESHOLD_MS +
+                              " cachedOrderableCash=" + sharedCash +
+                              " requiredCash=" + requiredCash +
+                              " side=" + sideKor +
+                              " band=" + band +
+                              " qty=" + qty +
+                              " price=" + price +
+                              " → 재조회 생략");
+                    }
                 }
 
                 if (!usedCache)
@@ -200,8 +228,16 @@ namespace Exercise_1
                     // t0424([T0424][RETRY])와 동일하게 짧게 재시도한 뒤에만 매수 체인을 차단한다.
                     // 기존 버그: Throttle=QueryFailed를 즉시 CASH_QUERY_FAILED로 취급해
                     // 재시도 없이 체인을 STOP시켰음.
-                    const int CASH_GUARD_MAX_RETRY = 2;
+                    //
+                    // ✅ [P2-FIX 2026-07-20] 기존 1.5초×2회=3초는 CSPAQ12200 스로틀 간격
+                    // (Cspaq12200GlobalGate.MinIntervalMs=10초)보다 훨씬 짧아 구조적으로
+                    // 통과가 불가능했음(t0424 재시도 파라미터를 검증 없이 그대로 이식한 것으로 추정,
+                    // 로그근거: 2026-07-20 13:37:24~27 lastRequestAgoMs 442→1961→3479 로
+                    // 10000에 전혀 도달하지 못하고 CASH_QUERY_FAILED 발생).
+                    // 재시도 횟수를 스로틀 간격 기준으로 계산해 총 대기시간이 10초를 확실히 넘기도록 한다.
                     const int CASH_GUARD_RETRY_DELAY_MS = 1500;
+                    int CASH_GUARD_MAX_RETRY = (int)Math.Ceiling(
+                        (double)Cspaq12200GlobalGate.MinIntervalMs / CASH_GUARD_RETRY_DELAY_MS);
 
                     for (int attempt = 0; attempt <= CASH_GUARD_MAX_RETRY; attempt++)
                     {

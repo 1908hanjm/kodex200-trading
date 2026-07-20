@@ -27,6 +27,51 @@ using XA_DATASETLib;
 
 namespace Exercise_1
 {
+    // =========================================================
+    // ✅ [2026-07-20 추가] CASH_GUARD 캐시 동기화
+    // 0900.QueryCspaq12200Async가 CSPAQ12200 조회에 성공하면 그 결과를
+    // 여기 저장한다. 0500_매매전송_Xing.cs의 CASH_GUARD가 (cash1000.LastResult가
+    // MISS인 경우) 별도 재조회 없이 이 값을 재사용할 수 있도록 하기 위한 공용 캐시.
+    //
+    // 버그 배경: 기존에는 0900의 조회 성공 결과가 어디에도 공유되지 않아,
+    // 0900이 방금(수백 ms 전) 성공적으로 조회한 값이 있는데도 0500의 CASH_GUARD는
+    // 이를 전혀 모른 채 별도로 재조회를 시도 → Throttle(10초)에 걸려
+    // CASH_QUERY_FAILED로 매수가 차단되는 문제가 있었음
+    // (로그근거: 2026-07-20 13:37:24.330 0900 조회 성공 → 13:37:24.544 CACHE_MISS agoMs=114459).
+    // =========================================================
+    public static class Cspaq12200SharedCache
+    {
+        private static readonly object _sync = new object();
+        private static long _lastOrderableCash;
+        private static DateTime _lastAtUtc = DateTime.MinValue;
+
+        public static void Update(double orderableCash)
+        {
+            lock (_sync)
+            {
+                _lastOrderableCash = (long)orderableCash;
+                _lastAtUtc = DateTime.UtcNow;
+            }
+        }
+
+        public static bool TryGetFresh(int freshThresholdMs, out long orderableCash, out double agoMs)
+        {
+            lock (_sync)
+            {
+                if (_lastAtUtc == DateTime.MinValue)
+                {
+                    orderableCash = 0;
+                    agoMs = -1;
+                    return false;
+                }
+
+                agoMs = (DateTime.UtcNow - _lastAtUtc).TotalMilliseconds;
+                orderableCash = _lastOrderableCash;
+                return agoMs >= 0 && agoMs < freshThresholdMs;
+            }
+        }
+    }
+
     public sealed class _0900_banance_cspaq12200_t0424
     {
         private readonly Action<string> _log;
@@ -171,6 +216,7 @@ namespace Exercise_1
 
                     _log("[0900][CSPAQ12200][RESULT] rc=0 cash=" + cash + " d2=" + d2 + " msg=OK");
                     _log($"CSPAQ12200 OK cash={cash} d2={d2}");
+                    Cspaq12200SharedCache.Update(cash);
                     return (cash, d2);
                 }
                 finally
