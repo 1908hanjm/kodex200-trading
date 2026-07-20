@@ -1044,7 +1044,7 @@ namespace Exercise_1
 
         public void FinalizeAfterUnlock(string side, int band, double price)
         {
-            FinalizeAfterUnlock(side, band, price, 0, 0, 0);
+            FinalizeAfterUnlock(side, band, price, 0, 0, 0, 0);
         }
 
         public void FinalizeAfterUnlock(
@@ -1054,6 +1054,20 @@ namespace Exercise_1
             int downSlideFromBand,
             int downSlideFromQty,
             int downSlideRecordBand)
+        {
+            FinalizeAfterUnlock(side, band, price, downSlideFromBand, downSlideFromQty, downSlideRecordBand, 0);
+        }
+
+        // ✅ [2026-07-20 P0-FIX] ordNo 추가: 이 체결완료가 2160 타임아웃을 유발한
+        // 바로 그 SELL 주문인지 판별해 자동 복구를 트리거하기 위해 필요하다.
+        public void FinalizeAfterUnlock(
+            string side,
+            int band,
+            double price,
+            int downSlideFromBand,
+            int downSlideFromQty,
+            int downSlideRecordBand,
+            long ordNo)
         {
             try
             {
@@ -1157,6 +1171,26 @@ namespace Exercise_1
                 if (isDownSlideSellComplete)
                 {
                     Debug.WriteLine("[0700] DownSlide SELL complete -> keep SwapInProgress until BUY complete");
+
+                    // ✅ [2026-07-20 P0-FIX] AutoTradingBlocked 영구 고착 방지 안전장치.
+                    // 이 SELL이 과거 2160의 WAIT_PARTIAL_PROGRESS 오판으로 타임아웃 처리되어
+                    // AutoTradingBlocked=true를 유발한 바로 그 주문이라면(ordNo 일치),
+                    // BUY 없이도 지금 즉시 SwapFlags/AutoTradingBlocked를 해제한다.
+                    // (원인이 된 SELL이 실제로는 정상 완전체결됐으므로 더 이상 차단할 이유가 없음)
+                    try
+                    {
+                        if (ordNo > 0 && _2160_강제슬라이딩실행.TryConsumeTimedOutSwapSellOrdNo(ordNo))
+                        {
+                            ClearSwapRuntimeFlags();
+                            Login.AutoTradingBlocked = false;
+                            Console.WriteLine("[2160][AUTO_RECOVER] ordNo=" + ordNo +
+                                " 타임아웃 이후 완전체결 확인, 매수 차단 해제");
+                        }
+                    }
+                    catch (Exception exAutoRecover)
+                    {
+                        Console.WriteLine("[2160][AUTO_RECOVER][EX] " + exAutoRecover.Message);
+                    }
                 }
                 else
                 {

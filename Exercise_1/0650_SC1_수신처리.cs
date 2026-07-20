@@ -894,7 +894,8 @@ namespace Exercise_1
                     filledPrice,
                     downSlideFromBand,
                     downSlideFromQty,
-                    downSlideRecordBand);
+                    downSlideRecordBand,
+                    ordNo);
 
             if (Login.FullClearAfter80 != null && Login.FullClearAfter80.IsRestorePendingOrActive)
             {

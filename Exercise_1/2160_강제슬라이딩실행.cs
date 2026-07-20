@@ -164,7 +164,7 @@ namespace Exercise_1
                     price: firePrice
                 ).ConfigureAwait(false);
 
-                long sellOrdNo = GetLockedOrderNoSafe();
+                long sellOrdNo = GetActiveOrderNoSafe();
                 UnlockWaitResult sellWait = await WaitTradeUnlockForSellAsync(
                     timeoutMs: 15000,
                     noProgressTimeoutMs: 30000).ConfigureAwait(false);
@@ -181,6 +181,10 @@ namespace Exercise_1
                     // BUY 단계로 절대 진행하지 않고 자동매매를 차단한다.
                     Write("[2160] SELL unlock timeout(no partial progress) -> AutoTradingBlocked=true, SwapFlags 유지, BUY 중단");
                     try { Login.AutoTradingBlocked = true; } catch { }
+                    // ✅ [2026-07-20 P0-FIX] 근본 원인(WAIT_PARTIAL_PROGRESS 오판)을 못 고치더라도,
+                    // 이 SELL이 나중에 실제로 완전체결되면 자동으로 블록을 풀 수 있도록
+                    // 원인이 된 실제 ordNo를 기록해둔다. (0700.FinalizeAfterUnlock에서 소비)
+                    RecordTimedOutSwapSellOrdNo(sellOrdNo);
                     WriteStateCheck("", 0);
                     return SlideResult.Fail;   // 슬라이딩 실패 → 호출자(0300)가 SLIDE_FAIL 쿨다운 처리
                 }
@@ -717,6 +721,54 @@ namespace Exercise_1
             catch
             {
                 return 0L;
+            }
+        }
+
+        // ✅ [2026-07-20 진단 확인] TradeWait.LockedOrdNo는 OrderService(수동 버튼 주문) 경로에서만
+        // gate.MarkAccepted(...)로 채워진다 (Login_05_체결.cs:OnOrderAccepted_OnLoop).
+        // 2160의 자동매매 SELL/BUY는 0400→0500→0530(_trader.SendOrderLive)로 나가며
+        // OrderService를 거치지 않으므로, LockedOrdNo는 사실상 항상 0에 머문다.
+        // 반면 Login.CurrentActiveOrderNo는 0400.TryRegisterOrdMap_FixedSignature ->
+        // OrdMap.TryRegister -> OrdRegistered 이벤트 -> 0650.OnOrdRegistered 로 이어지는
+        // 완전 동기 호출 체인 안에서 채워지며, 이 체인은 _exec.ExecuteAsync(...)의 Task가
+        // 완료되기 전에 반드시 끝나 있음이 보장된다(비동기 콜백/BeginInvoke 없음).
+        // 따라서 발주 직후 실제 ordNo가 필요할 때는 이 값을 우선 사용한다.
+        private static long GetActiveOrderNoSafe()
+        {
+            try
+            {
+                long active = Login.CurrentActiveOrderNo;
+                if (active > 0) return active;
+            }
+            catch { }
+            return GetLockedOrderNoSafe();
+        }
+
+        // ✅ [2026-07-20 P0-FIX] AutoTradingBlocked 영구 고착 방지용 안전장치.
+        // SELL이 타임아웃으로 AutoTradingBlocked=true를 유발하면 그 실제 ordNo를 기록해두고,
+        // 이후 0650/0700의 체결완료 처리에서 같은 ordNo가 실제로 완전체결되면
+        // TryConsumeTimedOutSwapSellOrdNo가 이를 소비하며 자동 복구를 트리거한다.
+        private static readonly object _timedOutSellLock = new object();
+        private static long _timedOutSwapSellOrdNo;
+
+        private static void RecordTimedOutSwapSellOrdNo(long ordNo)
+        {
+            lock (_timedOutSellLock) { _timedOutSwapSellOrdNo = ordNo; }
+            Console.WriteLine("[2160][AUTO_RECOVER][ARMED] ordNo=" + ordNo +
+                               " -> 이후 이 주문이 완전체결되면 자동으로 AutoTradingBlocked/SwapInProgress 해제 시도");
+        }
+
+        public static bool TryConsumeTimedOutSwapSellOrdNo(long ordNo)
+        {
+            if (ordNo <= 0) return false;
+
+            lock (_timedOutSellLock)
+            {
+                if (_timedOutSwapSellOrdNo <= 0 || _timedOutSwapSellOrdNo != ordNo)
+                    return false;
+
+                _timedOutSwapSellOrdNo = 0;
+                return true;
             }
         }
 
