@@ -54,6 +54,11 @@ namespace Exercise_1
             TimeoutNoProgress = 1
         }
 
+        // ✅ [2026-07-20 매직넘버 정리] 기존에 호출부에 하드코딩되어 있던 값을 명명 상수로 분리.
+        private const int SWAP_SELL_UNLOCK_TIMEOUT_MS = 15000;
+        private const int SWAP_SELL_NO_PROGRESS_TIMEOUT_MS = 30000;
+        private const int SWAP_BUY_UNLOCK_TIMEOUT_MS = 15000;
+
         private readonly 매매실행 _exec;
         private readonly Func<string> _getConnStr;
         private readonly Func<string> _getShcode;
@@ -166,8 +171,9 @@ namespace Exercise_1
 
                 long sellOrdNo = GetActiveOrderNoSafe();
                 UnlockWaitResult sellWait = await WaitTradeUnlockForSellAsync(
-                    timeoutMs: 15000,
-                    noProgressTimeoutMs: 30000).ConfigureAwait(false);
+                    sellOrdNo,
+                    timeoutMs: SWAP_SELL_UNLOCK_TIMEOUT_MS,
+                    noProgressTimeoutMs: SWAP_SELL_NO_PROGRESS_TIMEOUT_MS).ConfigureAwait(false);
                 if (IsDownSlideAborted())
                 {
                     Write("[2160] SELL interrupted by new SELL signal -> BUY stage skipped");
@@ -381,7 +387,7 @@ namespace Exercise_1
                     return SlideResult.Blocked;
                 }
 
-                bool buyUnlocked = await WaitTradeUnlockAsync(timeoutMs: 15000).ConfigureAwait(false);
+                bool buyUnlocked = await WaitTradeUnlockAsync(timeoutMs: SWAP_BUY_UNLOCK_TIMEOUT_MS).ConfigureAwait(false);
                 if (!buyUnlocked)
                 {
                     // BUY 주문은 이미 나간 상태이므로 SwapFlags는 유지하고 차단만 한다.
@@ -847,7 +853,12 @@ namespace Exercise_1
             return false;
         }
 
-        private async Task<UnlockWaitResult> WaitTradeUnlockForSellAsync(int timeoutMs, int noProgressTimeoutMs)
+        // ✅ [2026-07-20 P1-FIX] sellOrdNo를 SEND 직후 확보한 실제 ordNo로 파라미터 전달받는다.
+        // 기존에는 매 루프 Login.TradeWait.LockedOrdNo를 다시 읽었는데, 이 필드는 자동매매
+        // 경로(0400->0500->0530)에서는 채워지지 않는 값이라(OrderService 경유 수동주문 전용)
+        // 항상 0에 머물러 TryGetOrderProgress가 실제 부분체결을 절대 찾지 못했다.
+        // (Login.TradeWait.IsLocked는 0550의 락 상태를 정확히 반영하므로 그대로 사용한다.)
+        private async Task<UnlockWaitResult> WaitTradeUnlockForSellAsync(long sellOrdNo, int timeoutMs, int noProgressTimeoutMs)
         {
             int waited = 0;
             int lastCumFill = -1;
@@ -858,7 +869,6 @@ namespace Exercise_1
 
             while (true)
             {
-                long lockedOrdNo = 0;
                 bool locked = false;
 
                 try
@@ -866,7 +876,6 @@ namespace Exercise_1
                     if (Login.TradeWait == null) return UnlockWaitResult.Unlocked;
 
                     locked = Login.TradeWait.IsLocked;
-                    lockedOrdNo = Login.TradeWait.LockedOrdNo;
 
                     if (!locked) return UnlockWaitResult.Unlocked;
                 }
@@ -883,9 +892,9 @@ namespace Exercise_1
                 try
                 {
                     hasProgressSnapshot =
-                        lockedOrdNo > 0 &&
+                        sellOrdNo > 0 &&
                         Login.OrdMap != null &&
-                        Login.OrdMap.TryGetOrderProgress(lockedOrdNo, out orderQty, out cumFill, out remain);
+                        Login.OrdMap.TryGetOrderProgress(sellOrdNo, out orderQty, out cumFill, out remain);
                 }
                 catch
                 {
@@ -900,7 +909,7 @@ namespace Exercise_1
                         lastProgressAt = DateTime.Now;
                         sawPartial = true;
                         lastExtendLogSecond = -1;
-                        Write("[2160][WAIT_PARTIAL_PROGRESS] SELL ordNo=" + lockedOrdNo +
+                        Write("[2160][WAIT_PARTIAL_PROGRESS] SELL ordNo=" + sellOrdNo +
                               " cumFill=" + cumFill + "/" + orderQty +
                               " remain=" + remain +
                               " -> KEEP LOCK, AutoTradingBlocked=false, BUY 대기");
@@ -921,7 +930,7 @@ namespace Exercise_1
                             if (idleSec != lastExtendLogSecond)
                             {
                                 lastExtendLogSecond = idleSec;
-                                Write("[2160][WAIT_PARTIAL_PROGRESS] timeout extended ordNo=" + lockedOrdNo +
+                                Write("[2160][WAIT_PARTIAL_PROGRESS] timeout extended ordNo=" + sellOrdNo +
                                       " cumFill=" + lastCumFill +
                                       " remain=" + lastRemain +
                                       " idleMs=" + ((int)idleMs) +
@@ -930,7 +939,7 @@ namespace Exercise_1
                         }
                         else
                         {
-                            Write("[2160][WAIT_PARTIAL_PROGRESS][STOP] no SC progress ordNo=" + lockedOrdNo +
+                            Write("[2160][WAIT_PARTIAL_PROGRESS][STOP] no SC progress ordNo=" + sellOrdNo +
                                   " cumFill=" + lastCumFill +
                                   " remain=" + lastRemain +
                                   " idleMs=" + ((int)idleMs) +
@@ -940,7 +949,8 @@ namespace Exercise_1
                     }
                     else
                     {
-                        Write("[2160][WAIT_PARTIAL_PROGRESS][NONE] SELL timeout with no OrdMap partial snapshot");
+                        Write("[2160][WAIT_PARTIAL_PROGRESS][NONE] SELL ordNo=" + sellOrdNo +
+                              " timeout with no OrdMap partial snapshot");
                         return UnlockWaitResult.TimeoutNoProgress;
                     }
                 }
