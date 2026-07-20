@@ -21,8 +21,8 @@ namespace Exercise_1
     public sealed class _0100_Xing_connect : IDisposable
     {
         // ===== 서버 정보(환경에 맞게 필요 시 수정) =====
-        private const string REAL_SERVER_ADDR = "hts.ebestsec.co.kr";
-        private const string TEST_SERVER_ADDR = "demo.ebestsec.co.kr";
+        private const string REAL_SERVER_ADDR = "hts.ls_sec.co.kr";
+        private const string TEST_SERVER_ADDR = "demo.ebestsec.co.kr";   // [데모에서는 꼭 이주소 사용하세요]
         private const int DEFAULT_PORT = 20001;
 
         private readonly Action<string> _updateStatus;
@@ -79,7 +79,7 @@ namespace Exercise_1
                     throw new InvalidOperationException("0050.Apply(runMode)가 호출되기 전에 0100.ConnectAsync()가 호출되었습니다.");
 
                 Console.WriteLine("==================================================");
-                Console.WriteLine($"[0100] ConnectAsync START shcode='{shcode}' now={DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
+                Console.WriteLine($"[0100] ConnectAsync START shcode='{shcode}' now={KoreaTime.Timestamp()} KST");
                 Console.WriteLine($"[0100] mode={_0050_Real_Test환경결정.RunMode} db='{_0050_Real_Test환경결정.DbPath}'");
                 Console.WriteLine("==================================================");
 
@@ -162,7 +162,7 @@ namespace Exercise_1
                 }
 
                 Console.WriteLine("==================================================");
-                Console.WriteLine($"[0100] ConnectAsync END (SUCCESS) now={DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
+                Console.WriteLine($"[0100] ConnectAsync END (SUCCESS) now={KoreaTime.Timestamp()} KST");
                 Console.WriteLine("==================================================");
 
                 return _mmXing;

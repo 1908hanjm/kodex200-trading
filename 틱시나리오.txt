@@ -1,0 +1,177 @@
+--- 한밴드 매도 --------------------------- start band = 40 ------------------------------
+DELETE FROM from_test;
+
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:01', 80480);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:02', 80620); -- 돌파 시작
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:03', 80780);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:04', 80880); -- peak
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:05', 80820);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:06', 80720);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:07', 80620); -- FIRE 후보
+
+--- 한밴드 매수-------------------------  start band = 39 ------------------------------
+DELETE FROM from_test;
+
+INSERT INTO from_test (ts, price) VALUES ('2026-03-09 09:00:01', 80720);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-09 09:00:02', 80640);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-09 09:00:03', 80590); -- 돌파 상태 진입
+INSERT INTO from_test (ts, price) VALUES ('2026-03-09 09:00:04', 80420);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-09 09:00:05', 80320); -- trough
+INSERT INTO from_test (ts, price) VALUES ('2026-03-09 09:00:06', 80420);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-09 09:00:07', 80520);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-09 09:00:08', 80590); -- FIRE 후보
+
+--------두밴드 매도 시나리오 SQL   --------------  start band = 40 ----------------------------
+DELETE FROM from_test;
+
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:01', 80480);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:02', 80620); -- 40 팔가격 돌파
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:03', 80880);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:04', 81080);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:05', 81240); -- 39 팔가격 돌파
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:06', 81420); -- peak
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:07', 81360);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:08', 81290);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:09', 81220); -- FIRE 후보
+
+--------두밴드 매수 시나리오 SQL   --------------  start band = 38 ---------------------------
+DELETE FROM from_test;
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:01', 81320);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:02', 81180); -- 38 살가격(81200) 하향 돌파
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:03', 80980);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:04', 80580); -- 39 살가격(80600) 하향 돌파
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:05', 80380); -- trough
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:06', 80460);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:07', 80520);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:08', 80590); -- FIRE 후보
+
+DELETE FROM from_test;
+
+--------한밴드 매수 시나리오 (슬라이딩)  --------------  start band = 40 ---------------------------
+DELETE FROM from_test;
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:01', 80480);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:02', 80120);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:03', 79980); -- 40 살가격 돌파
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:04', 79620);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:05', 79280); -- trough
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:06', 79480);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:07', 79620);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:00:08', 79880); -- FIRE 후보 (80000 아래)
+
+
+--------한밴드 매도 시나리오 (슬라이딩)  --------------  start band = 41 ---------------------------
+DELETE FROM from_test;
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:01', 79850);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:02', 79920);
+
+-- 🔺 팔가격(79999) 상향 돌파 시작
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:03', 80020); -- 돌파 발생
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:04', 80120);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:05', 80240);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:06', 80380); -- peak 형성
+
+-- 🔻 꺾임 시작 (되돌림)
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:07', 80300);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:08', 80180);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:09', 80040);
+
+-- 🔥 SELL FIRE 후보 (peak 대비 kk 하락 충족)
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:10', 79980);
+
+
+============= 부분체결_업슬라이딩_장종료 =========================
+-- ------------------------------------------------------------
+-- 1단계 테스트: 업슬라이딩 SELL FIRE 발생용
+-- start band = 41
+-- 목적:
+-- - 41밴드에서 상승 돌파
+-- - peak 형성
+-- - 꺾임
+-- - SELL FIRE 발생
+-- - 실제 부분체결은 9010이 처리
+-- ------------------------------------------------------------
+
+DELETE FROM from_test;
+
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:01', 79850);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:02', 79920);
+
+-- 🔺 팔가격(79999) 상향 돌파 시작
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:03', 80020); -- 돌파 발생
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:04', 80120);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:05', 80240);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:06', 80380); -- peak 형성
+
+-- 🔻 꺾임 시작
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:07', 80300);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:08', 80180);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:09', 80040);
+
+-- 🔥 SELL FIRE
+INSERT INTO from_test (ts, price) VALUES ('2026-03-10 09:10:10', 79980);
+
+-- ============= 부분체결_다운슬라이딩_장종료 =========================
+-- ============= 부분체결_다운슬라이딩_장종료_1차만 =========================
+-- ------------------------------------------------------------
+-- 목적:
+-- - 현재 보유 31~40 기준
+-- - 첫 다운슬라이딩만 발생시킨다
+-- - 31 매도 → 41 매수 진입
+-- - 첫 BUY에서 부분체결(9010) 발생
+-- - 그 뒤 추가 하락/추가 슬라이딩 없이 replay 종료
+--
+-- 중요:
+-- - 이번 SQL은 "41까지 가고 끝"이 목적이다.
+-- - 42로 넘어가는 두 번째 다운슬라이딩을 막기 위해
+--   BUY FIRE 직후 곧바로 replay가 끝나도록 짧게 구성한다.
+-- ------------------------------------------------------------
+
+DELETE FROM from_test;
+
+-- 1) 시작: startBand=40의 살가격(80000) 위
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:01', 80150);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:02', 80050);
+
+-- 2) 40밴드 살가격(80000) 하향 돌파
+--    => 시스템은 여기서 K=40, targetBuyBand=41 슬라이딩 후보를 잡음
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:03', 79980); -- break
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:04', 79880);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:05', 79780);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:06', 79680); -- trough
+
+-- 3) 꺾임(반등)
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:07', 79780);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:08', 79880);
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:09', 79930);
+
+-- 4) 첫 BUY FIRE 유도
+--    여전히 80000 아래에 두어 "40밴드 구간 밖" 상태 유지
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:10', 79950);
+
+-- 5) 바로 종료
+--    두 번째 슬라이딩(K=41 → 42)으로 넘어가지 않게
+--    추가 의미 있는 틱 없이 replay를 끝낸다.
+INSERT INTO from_test (ts, price) VALUES ('2026-03-12 09:10:11', 79950);
+
+
+
+
+
+
+
+
+
+
+
+
+
+부분체결_업슬라이딩을 좀더 생각해보자 최초에 모든 qty는 10이고 10 밴드가 있었어. 이후에 매수가 일어나 다운슬라이딩이 되고 총 band는 10이야 이후애 up슬라이딩이 일어났는데 부분 체결로 인하여11밴드가 되었어. 이후에 장이 종료되고 다음날 또 거래가 시작되는데 이때 발생가능한 문제점?  -> 
+미완료 복구체인이 있으면, 장 시작 시 그 체인을 우선 상태로 로드하고 새 일반매매를 잠시 금지.
+
+
+
+
+
+
+
+

@@ -54,13 +54,42 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
     산가격      INTEGER NOT NULL,
     살가격      INTEGER NOT NULL,
     qty         INTEGER NOT NULL DEFAULT 0,
-    sina        INTEGER NOT NULL DEFAULT 0,
     from_band   INTEGER NOT NULL DEFAULT 0,
     from_qty    INTEGER NOT NULL DEFAULT 0,
+    extra_qty   INTEGER NOT NULL DEFAULT 0,
     진짜산가격  INTEGER NOT NULL DEFAULT 0
 );", conn))
             {
                 cmdCreate.ExecuteNonQuery();
+            }
+
+            EnsureExtraQtyColumn(conn);
+        }
+
+        public static void EnsureExtraQtyColumn(SQLiteConnection conn)
+        {
+            bool exists = false;
+            using (var cmd = new SQLiteCommand("PRAGMA table_info(kodex200_new);", conn))
+            using (var rd = cmd.ExecuteReader())
+            {
+                while (rd.Read())
+                {
+                    string name = rd["name"] != DBNull.Value ? Convert.ToString(rd["name"]) : "";
+                    if (string.Equals(name, "extra_qty", StringComparison.OrdinalIgnoreCase))
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!exists)
+            {
+                using (var cmd = new SQLiteCommand(
+                    "ALTER TABLE kodex200_new ADD COLUMN extra_qty INTEGER NOT NULL DEFAULT 0;", conn))
+                {
+                    cmd.ExecuteNonQuery();
+                }
             }
         }
 
@@ -104,8 +133,8 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
                 using (var tx = conn.BeginTransaction())
                 using (var cmdIns = new SQLiteCommand(
                     @"INSERT OR REPLACE INTO kodex200_new 
-      (band, 팔가격, 산가격, 살가격, qty, sina, from_qty, from_band, 진짜산가격)
-      VALUES (@band, @팔가격, @산가격, @살가격, @qty, @sina, @from_qty, @from_band, @진짜산가격);",
+      (band, 팔가격, 산가격, 살가격, qty, from_qty, from_band, extra_qty, 진짜산가격)
+      VALUES (@band, @팔가격, @산가격, @살가격, @qty, @from_qty, @from_band, @extra_qty, @진짜산가격);",
                     conn, tx))
                 {
                     cmdIns.Parameters.Add("@band", DbType.Int32);
@@ -113,9 +142,9 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
                     cmdIns.Parameters.Add("@산가격", DbType.Int32);
                     cmdIns.Parameters.Add("@살가격", DbType.Int32);
                     cmdIns.Parameters.Add("@qty", DbType.Int32);
-                    cmdIns.Parameters.Add("@sina", DbType.Int32);
                     cmdIns.Parameters.Add("@from_qty", DbType.Int32);
                     cmdIns.Parameters.Add("@from_band", DbType.Int32);
+                    cmdIns.Parameters.Add("@extra_qty", DbType.Int32);
                     cmdIns.Parameters.Add("@진짜산가격", DbType.Int32);
 
                     for (int i = 0; i < seed.GetLength(0); i++)
@@ -125,9 +154,9 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
                         cmdIns.Parameters["@산가격"].Value = seed[i, 2]; // 산가격(매수주문가)
                         cmdIns.Parameters["@살가격"].Value = seed[i, 2]; // 필요하면 다른 값으로 변경
                         cmdIns.Parameters["@qty"].Value = seed[i, 3];
-                        cmdIns.Parameters["@sina"].Value = seed[i, 4];
                         cmdIns.Parameters["@from_qty"].Value = seed[i, 5];
                         cmdIns.Parameters["@from_band"].Value = seed[i, 6];
+                        cmdIns.Parameters["@extra_qty"].Value = 0;
                         cmdIns.Parameters["@진짜산가격"].Value = 0;        // 초기값 0
 
                         cmdIns.ExecuteNonQuery();
@@ -626,11 +655,12 @@ LIMIT 1;";
 
             using (var conn = new SQLiteConnection(connStr))
             using (var cmd = new SQLiteCommand(
-                @"SELECT band, 팔가격, 산가격, 살가격, qty, sina, from_band, from_qty, 진짜산가격
+                @"SELECT band, 팔가격, 산가격, 살가격, qty, from_band, from_qty, extra_qty, 진짜산가격
           FROM kodex200_new
           ORDER BY band ASC;", conn))
             {
                 conn.Open();
+                DB_Control.EnsureExtraQtyColumn(conn);
                 using (var rd = cmd.ExecuteReader())
                 {
                     while (rd.Read())
@@ -642,9 +672,9 @@ LIMIT 1;";
                             산가격 = Convert.ToInt64(rd["산가격"]),   // ★ 이 줄 추가
                             살가격 = Convert.ToInt64(rd["살가격"]),   // == Low
                             Qty = Convert.ToInt64(rd["qty"]),
-                            Sina = Convert.ToInt64(rd["sina"]),
                             From_Band = Convert.ToInt32(rd["from_band"]),
                             From_Qty = Convert.ToInt64(rd["from_qty"]),
+                            Extra_Qty = Convert.ToInt64(rd["extra_qty"]),
                             진짜산가격 = Convert.ToInt64(rd["진짜산가격"])
                         });
                     }
@@ -653,6 +683,43 @@ LIMIT 1;";
 
             return list;
         }
+
+        // DB에서 특정 band 1행만 읽는다 (from_band/from_qty 포함)
+        public static BandRange ReadOne(string connStr, int band)
+        {
+            if (band <= 0) return null;
+
+            using (var conn = new SQLiteConnection(connStr))
+            using (var cmd = new SQLiteCommand(
+                @"SELECT band, 팔가격, 산가격, 살가격, qty, from_band, from_qty, extra_qty, 진짜산가격
+          FROM kodex200_new
+          WHERE band=@b
+          LIMIT 1;", conn))
+            {
+                cmd.Parameters.AddWithValue("@b", band);
+                conn.Open();
+                DB_Control.EnsureExtraQtyColumn(conn);
+                using (var rd = cmd.ExecuteReader())
+                {
+                    if (!rd.Read()) return null;
+
+                    return new BandRange
+                    {
+                        Band = Convert.ToInt32(rd["band"]),
+                        팔가격 = Convert.ToInt64(rd["팔가격"]),
+                        산가격 = Convert.ToInt64(rd["산가격"]),
+                        살가격 = Convert.ToInt64(rd["살가격"]),
+                        Qty = Convert.ToInt64(rd["qty"]),
+                        From_Band = Convert.ToInt32(rd["from_band"]),
+                        From_Qty = Convert.ToInt64(rd["from_qty"]),
+                        Extra_Qty = Convert.ToInt64(rd["extra_qty"]),
+                        진짜산가격 = Convert.ToInt64(rd["진짜산가격"])
+                    };
+                }
+            }
+        }
+
+
 
 
         // ListView에 kodex200_new 내용 표시
@@ -663,6 +730,12 @@ LIMIT 1;";
             listView.BeginUpdate();
             try
             {
+                // ✅ 핵심: 표 형태로 강제
+                listView.View = View.Details;
+                listView.FullRowSelect = true;
+                listView.HideSelection = false;
+                listView.GridLines = true;
+
                 listView.Items.Clear();
                 listView.Columns.Clear();
 
@@ -672,32 +745,43 @@ LIMIT 1;";
                 listView.Columns.Add("산가격", 80);
                 listView.Columns.Add("살가격", 80);
                 listView.Columns.Add("qty", 60);
-                listView.Columns.Add("sina", 60);
-                listView.Columns.Add("from_band", 80);
-                listView.Columns.Add("from_qty", 80);
+                listView.Columns.Add("from_band", 70);
+                listView.Columns.Add("from_qty", 70);
+                listView.Columns.Add("extra_qty", 70);
                 listView.Columns.Add("진짜산가격", 90);
 
                 using (var conn = new SQLiteConnection(connStr))
                 using (var cmd = new SQLiteCommand(
-                    @"SELECT band, 팔가격, 산가격, 살가격, qty, sina, from_band, from_qty, 진짜산가격
-                      FROM kodex200_new
-                      ORDER BY band ASC;", conn))
+                    @"SELECT band, 팔가격, 산가격, 살가격, qty, from_band, from_qty, extra_qty, 진짜산가격
+              FROM kodex200_new
+              WHERE IFNULL(qty,0) > 0
+              ORDER BY band ASC;", conn))
                 {
                     conn.Open();
+                    DB_Control.EnsureExtraQtyColumn(conn);
                     using (var rd = cmd.ExecuteReader())
                     {
                         while (rd.Read())
                         {
+                            int band = ReadIntForView(rd["band"]);
+                            long qty = ReadLongForView(rd["qty"]);
+                            int fromBand = ReadIntForView(rd["from_band"]);
+                            long fromQty = ReadLongForView(rd["from_qty"]);
+                            long rawExtraQty = ReadLongForView(rd["extra_qty"]);
+                            long extraQty = NormalizeExtraQtyForView(band, rawExtraQty);
+
                             var item = new ListViewItem(rd["band"].ToString());
                             item.SubItems.Add(rd["팔가격"].ToString());
                             item.SubItems.Add(rd["산가격"].ToString());
                             item.SubItems.Add(rd["살가격"].ToString());
-                            item.SubItems.Add(rd["qty"].ToString());
-                            item.SubItems.Add(rd["sina"].ToString());
-                            item.SubItems.Add(rd["from_band"].ToString());
-                            item.SubItems.Add(rd["from_qty"].ToString());
+                            item.SubItems.Add(qty.ToString());
+                            item.SubItems.Add(fromBand.ToString());
+                            item.SubItems.Add(fromQty.ToString());
+                            item.SubItems.Add(extraQty.ToString());
                             item.SubItems.Add(rd["진짜산가격"].ToString());
                             listView.Items.Add(item);
+
+                            LogExtraQtyView(band, fromBand, fromQty, extraQty, qty);
                         }
                     }
                 }
@@ -710,6 +794,43 @@ LIMIT 1;";
             {
                 listView.EndUpdate();
             }
+        }
+
+        private static int ReadIntForView(object value)
+        {
+            if (value == null || value == DBNull.Value)
+                return 0;
+
+            try { return Convert.ToInt32(value); }
+            catch { return 0; }
+        }
+
+        private static long ReadLongForView(object value)
+        {
+            if (value == null || value == DBNull.Value)
+                return 0L;
+
+            try { return Convert.ToInt64(value); }
+            catch { return 0L; }
+        }
+
+        private static long NormalizeExtraQtyForView(int band, long extraQty)
+        {
+            if (extraQty >= 0)
+                return extraQty;
+
+            Console.WriteLine("[UI][WARN] Band=" + band + " ExtraQtyNegative=" + extraQty);
+            return 0L;
+        }
+
+        private static void LogExtraQtyView(int band, int fromBand, long fromQty, long extraQty, long qty)
+        {
+            Console.WriteLine("[EXTRA_QTY][VIEW] " +
+                              "Band=" + band +
+                              " FromBand=" + fromBand +
+                              " FromQty=" + fromQty +
+                              " ExtraQty=" + extraQty +
+                              " Qty=" + qty);
         }
     }
 }
@@ -873,4 +994,4 @@ LIMIT 1;";
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
+// 2026-02-16 82136

@@ -82,6 +82,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="0001_real_test선택.cs" />
+    <Compile Include="0005_장종료정리.cs" />
     <Compile Include="0070_거래후초기화.cs" />
     <Compile Include="0090_LoginFormAccessor.cs" />
     <Compile Include="0100_Xing_connect.cs" />
@@ -95,24 +96,87 @@
     <Compile Include="025_BandRange.cs" />
     <Compile Include="0270_틱계산2.cs" />
     <Compile Include="0300_밴드매칭.cs" />
+    <Compile Include="0300_BUY판정.cs" />
+    <Compile Include="0310_GeneralBuyCalculator.cs" />
+    <Compile Include="0310_일반BUY.cs" />
+    <Compile Include="0320_10전슬라이딩BUY.cs" />
+    <Compile Include="0330_10후슬라이딩BUY.cs" />
+    <Compile Include="0340_배정금_한도체크.cs" />
     <Compile Include="0400_매매실행.cs" />
     <Compile Include="0500_매매전송_Xing.cs" />
     <Compile Include="0530_매매_Xing.cs" />
+    <Compile Include="0540_주문복구관리.cs" />
     <Compile Include="0550_부분체결확인.cs" />
     <Compile Include="0600_주문번호_매핑.cs" />
+    <Compile Include="0610_재기동체결복구.cs" />
     <Compile Include="060_listView3_당일거래.cs" />
     <Compile Include="0650_SC1_수신처리.cs" />
     <Compile Include="0670_listView3_당일거래.cs" />
     <Compile Include="0700_매매후update.cs" />
     <Compile Include="070_자료수집.cs" />
+    <Compile Include="0800__완전청산후.cs" />
+    <Compile Include="0810_완전청산분배알고리즘.cs" />
+    <Compile Include="0800_이월상태점검.cs" />
+    <Compile Include="0830_이월슬라이딩판정.cs" />
     <Compile Include="0900_banance_cspaq12200_t0424.cs" />
     <Compile Include="0910_Richtextbox.cs" />
+    <Compile Include="0950_DB_증권사_잔고일치확인.cs" />
     <Compile Include="1000_현금주문가능금액.cs" />
     <Compile Include="1010_증권사보유주수.cs" />
+    <Compile Include="2000_스왑Plan.cs" />
+    <Compile Include="2100_스왑실행순서.cs" />
+    <Compile Include="2160_강제슬라이딩실행.cs" />
+    <Compile Include="2300_상승슬라이딩Plan.cs" />
+    <Compile Include="2310_상승슬라이딩실행순서.cs" />
+    <Compile Include="2320_상승슬라이딩정합체크.cs" />
     <Compile Include="3000_주문모델.cs" />
     <Compile Include="3001_공용전달타입.cs" />
+    <Compile Include="9000_ReplayMock.cs" />
+    <Compile Include="9010_ReplayPartialFillScript.cs" />
+    <Compile Include="AppLog.cs" />
+    <Compile Include="KoreaTime.cs" />
+    <Compile Include="Cspaq12200GlobalGate.cs" />
     <Compile Include="Feeds.cs" />
     <Compile Include="IOrderService.cs" />
+    <Compile Include="Login.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login.Designer.cs">
+      <DependentUpon>Login.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Login_02_변수및상태.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_03_DB및환경선택.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_04_Real_Test시작.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_05_체결.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_06_틱엔진.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_07_UI_Render.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_08_주문_잔고조회.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_09_버튼.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_10_장종료정리.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Login_11_BootCapture.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Repositories\0002_Pending확인.cs" />
+    <Compile Include="Repositories\0003_Pending복구실행.cs" />
+    <Compile Include="Repositories\0004_미체결추격관리.cs" />
     <Compile Include="Repositories\RepoBootstrap.cs" />
     <Compile Include="Repos.cs" />
     <Compile Include="Repositories\DbHelper.cs" />
@@ -133,6 +197,7 @@
     </Compile>
     <Compile Include="BandThresholdQtyCalculator.cs" />
     <Compile Include="TestReplayFeed.cs" />
+    <Compile Include="test_tick_read.cs" />
     <Compile Include="XingRealTimeFeed.cs" />
     <Compile Include="Repositories\BalanceRepository.cs" />
     <Compile Include="Repositories\IRepository.cs" />
@@ -145,12 +210,6 @@
     </Compile>
     <Compile Include="DB_Control.Designer.cs">
       <DependentUpon>DB_Control.cs</DependentUpon>
-    </Compile>
-    <Compile Include="Login.cs">
-      <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="Login.Designer.cs">
-      <DependentUpon>Login.cs</DependentUpon>
     </Compile>
     <Compile Include="OrderInquiryService.cs" />
     <Compile Include="OrderService.cs" />
@@ -178,6 +237,7 @@
       <DependentUpon>T0424Row.cs</DependentUpon>
     </EmbeddedResource>
     <None Include="app.config" />
+    <None Include="copilot-instructions.md" />
     <None Include="mydb.db" />
     <None Include="packages.config" />
     <None Include="Properties\Settings.settings">

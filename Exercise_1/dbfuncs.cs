@@ -1,6 +1,17 @@
 ﻿// DbFuncs.cs — kodex200_new 및 daily_balance 관리 + 자동매매 반영용 (C# 7.3)
 //h  Test.cs에서 DbFuncs.UpdateKodexQty() 호출 시 즉시 kodex200_new.qty를 업데이트
 //h  StateAndDecisionUnit의 매매신호에 따라 자동매매 반영 가능
+//
+// ✅ 이번 정합 수정:
+// - KodexQtyUpdated는 기존처럼 Action<int,long> 유지
+// - 외부 클래스(예: 0700)에서 직접 event Invoke 하지 않도록
+//   RaiseKodexQtyUpdated(int band, long qty) 정적 메서드 추가
+// - UpdateKodexQty 내부도 RaiseKodexQtyUpdated(...) 사용으로 통일
+//
+// ✅ 0700에서 사용할 호출:
+//   DbFuncs.RaiseKodexQtyUpdated(band, 0);
+//   또는
+//   DbFuncs.RaiseKodexQtyUpdated(band, newQty);
 
 using System;
 using System.Data;
@@ -17,7 +28,22 @@ namespace Exercise_1
         private readonly int _parameter;
 
         // ✅ DB 업데이트 신호(상위 UI에서 구독)
-        public static event Action<int, long> KodexQtyUpdated;
+        // isComplete: true=완전체결, false=부분체결
+        // 부분체결(isComplete=false) 시 t0424 호출 금지 정책을 UI(Login_05)에서 판단
+        public static event Action<int, long, bool> KodexQtyUpdated;
+
+        // ✅ 외부 클래스는 이 메서드로만 이벤트를 발생시킨다.
+        // isComplete: true=완전체결(체인 종료 후 t0424 허용), false=부분체결(t0424 금지)
+        public static void RaiseKodexQtyUpdated(int band, long qty, bool isComplete = true)
+        {
+            try
+            {
+                var handler = KodexQtyUpdated;
+                if (handler != null)
+                    handler(band, qty, isComplete);
+            }
+            catch { }
+        }
 
         public DbFuncs(string dbPath, int parameter = 0)
         {
@@ -97,13 +123,14 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
     산가격       INTEGER NOT NULL,   -- 매수 주문가
     살가격       INTEGER NOT NULL,   -- 매수 기준선 (Low)
     qty          INTEGER NOT NULL DEFAULT 0,
-    sina         INTEGER NOT NULL DEFAULT 0,
     from_band    INTEGER NOT NULL DEFAULT 0,
     from_qty     INTEGER NOT NULL DEFAULT 0,
+    extra_qty    INTEGER NOT NULL DEFAULT 0,
     진짜산가격   INTEGER NOT NULL DEFAULT 0
 );", conn))
             {
                 cmd.ExecuteNonQuery();
+                DB_Control.EnsureExtraQtyColumn(conn);
             }
         }
 
@@ -130,7 +157,6 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
 
             int? targetBand = null;
             long sumQty = 0;
-            long sumSina = 0;
 
             LogDbFileInfo();
 
@@ -150,60 +176,58 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
                     listView.Columns.Add("산가격", 80);
                     listView.Columns.Add("살가격", 70);
                     listView.Columns.Add("QTY", 70);
-                    listView.Columns.Add("SINA", 70);
                     listView.Columns.Add("from_band", 80);
                     listView.Columns.Add("from_QTY", 80);
+                    listView.Columns.Add("extra_QTY", 80);
                     listView.Columns.Add("진짜산가격", 70);
 
+                    DB_Control.EnsureExtraQtyColumn(conn);
                     using (var cmd = new SQLiteCommand(
-                        "SELECT * FROM kodex200_new ORDER BY band;", conn))
+                        "SELECT * FROM kodex200_new WHERE IFNULL(qty,0) > 0 ORDER BY band;", conn))
                     using (var reader = cmd.ExecuteReader())
                     {
                         while (reader.Read())
                         {
+                            int band = ReadIntForView(reader["band"]);
+                            long qty = ReadLongForView(reader["qty"]);
+                            int fromBand = ReadIntForView(reader["from_band"]);
+                            long fromQty = ReadLongForView(reader["from_qty"]);
+                            long rawExtraQty = ReadLongForView(reader["extra_qty"]);
+                            long extraQty = NormalizeExtraQtyForView(band, rawExtraQty);
+
                             var item = new ListViewItem(reader["band"].ToString());
                             item.SubItems.Add(reader["팔가격"].ToString());
                             item.SubItems.Add(reader["산가격"].ToString());
                             item.SubItems.Add(reader["살가격"].ToString());
-                            item.SubItems.Add(reader["qty"].ToString());
-                            item.SubItems.Add(reader["sina"].ToString());
-                            item.SubItems.Add(reader["from_band"].ToString());
-                            item.SubItems.Add(reader["from_qty"].ToString());
+                            item.SubItems.Add(qty.ToString(CultureInfo.InvariantCulture));
+                            item.SubItems.Add(fromBand.ToString(CultureInfo.InvariantCulture));
+                            item.SubItems.Add(fromQty.ToString(CultureInfo.InvariantCulture));
+                            item.SubItems.Add(extraQty.ToString(CultureInfo.InvariantCulture));
                             item.SubItems.Add(reader["진짜산가격"].ToString());
                             listView.Items.Add(item);
+
+                            LogExtraQtyView(band, fromBand, fromQty, extraQty, qty);
                         }
                     }
 
                     using (var cmdSum = new SQLiteCommand(
-                        "SELECT COALESCE(SUM(qty),0), COALESCE(SUM(sina),0) FROM kodex200_new;", conn))
+                        "SELECT COALESCE(SUM(qty),0) FROM kodex200_new;", conn))
                     using (var r = cmdSum.ExecuteReader())
                     {
                         if (r.Read())
                         {
                             sumQty = !r.IsDBNull(0) ? r.GetInt64(0) : 0;
-                            sumSina = !r.IsDBNull(1) ? r.GetInt64(1) : 0;
                         }
                     }
 
                     if (highlightMaxBandWithQtyNonZero)
                     {
                         using (var cmdMaxNZ = new SQLiteCommand(
-                            "SELECT MAX(band) FROM kodex200_new WHERE IFNULL(qty,0) <> 0;", conn))
+                            "SELECT MAX(band) FROM kodex200_new WHERE IFNULL(qty,0) > 0;", conn))
                         {
                             var r = cmdMaxNZ.ExecuteScalar();
                             if (r != DBNull.Value && r != null)
                                 targetBand = Convert.ToInt32(r);
-                        }
-
-                        if (targetBand == null)
-                        {
-                            using (var cmdMaxAll = new SQLiteCommand(
-                                "SELECT MAX(band) FROM kodex200_new;", conn))
-                            {
-                                var rAll = cmdMaxAll.ExecuteScalar();
-                                if (rAll != DBNull.Value && rAll != null)
-                                    targetBand = Convert.ToInt32(rAll);
-                            }
                         }
                     }
                 }
@@ -219,10 +243,30 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
 
             if (textBoxQtySum != null)
                 textBoxQtySum.Text = sumQty.ToString("N0", CultureInfo.InvariantCulture);
-            if (textBoxSinaSum != null)
-                textBoxSinaSum.Text = sumSina.ToString("N0", CultureInfo.InvariantCulture);
         }
+        // === [ADD] TOTAL QTY ===
+        public long GetTotalQty()
+        {
+            try
+            {
+                using (var conn = OpenConn())
+                using (var cmd = new SQLiteCommand(
+                    "SELECT COALESCE(SUM(qty),0) FROM kodex200_new;", conn))
+                {
+                    var result = cmd.ExecuteScalar();
 
+                    if (result == null || result == DBNull.Value)
+                        return 0;
+
+                    return Convert.ToInt64(result);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[DB][GetTotalQty ERROR] " + ex.Message);
+                return 0;
+            }
+        }
         public static void SelectRowByBand(ListView listView, int targetBand)
         {
             if (listView == null || listView.Items.Count == 0) return;
@@ -230,7 +274,8 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
             listView.SelectedItems.Clear();
             foreach (ListViewItem it in listView.Items)
             {
-                if (int.TryParse(it.SubItems[0].Text, out int band) && band == targetBand)
+                int band;
+                if (int.TryParse(it.SubItems[0].Text, out band) && band == targetBand)
                 {
                     it.Selected = true;
                     it.EnsureVisible();
@@ -238,6 +283,43 @@ CREATE TABLE IF NOT EXISTS kodex200_new (
                     break;
                 }
             }
+        }
+
+        private static int ReadIntForView(object value)
+        {
+            if (value == null || value == DBNull.Value)
+                return 0;
+
+            try { return Convert.ToInt32(value, CultureInfo.InvariantCulture); }
+            catch { return 0; }
+        }
+
+        private static long ReadLongForView(object value)
+        {
+            if (value == null || value == DBNull.Value)
+                return 0L;
+
+            try { return Convert.ToInt64(value, CultureInfo.InvariantCulture); }
+            catch { return 0L; }
+        }
+
+        private static long NormalizeExtraQtyForView(int band, long extraQty)
+        {
+            if (extraQty >= 0)
+                return extraQty;
+
+            Console.WriteLine("[UI][WARN] Band=" + band + " ExtraQtyNegative=" + extraQty);
+            return 0L;
+        }
+
+        private static void LogExtraQtyView(int band, int fromBand, long fromQty, long extraQty, long qty)
+        {
+            Console.WriteLine("[EXTRA_QTY][VIEW] " +
+                              "Band=" + band +
+                              " FromBand=" + fromBand +
+                              " FromQty=" + fromQty +
+                              " ExtraQty=" + extraQty +
+                              " Qty=" + qty);
         }
 
         // === Daily Balance 관련 ===
@@ -295,13 +377,13 @@ ORDER BY ymd DESC;";
                     {
                         while (r.Read())
                         {
-                            var item = new ListViewItem(r["ymd"]?.ToString() ?? "");
-                            item.SubItems.Add(r["보유량"]?.ToString() ?? "");
-                            item.SubItems.Add(r["현금"]?.ToString() ?? "");
-                            item.SubItems.Add(r["d2"]?.ToString() ?? "");
-                            item.SubItems.Add(r["현금토탈"]?.ToString() ?? "");
-                            item.SubItems.Add(r["당일손익"]?.ToString() ?? "");
-                            item.SubItems.Add(r["총자산"]?.ToString() ?? "");
+                            var item = new ListViewItem(r["ymd"] == null ? "" : r["ymd"].ToString());
+                            item.SubItems.Add(r["보유량"] == null ? "" : r["보유량"].ToString());
+                            item.SubItems.Add(r["현금"] == null ? "" : r["현금"].ToString());
+                            item.SubItems.Add(r["d2"] == null ? "" : r["d2"].ToString());
+                            item.SubItems.Add(r["현금토탈"] == null ? "" : r["현금토탈"].ToString());
+                            item.SubItems.Add(r["당일손익"] == null ? "" : r["당일손익"].ToString());
+                            item.SubItems.Add(r["총자산"] == null ? "" : r["총자산"].ToString());
                             listView.Items.Add(item);
                         }
                     }
@@ -347,6 +429,149 @@ ON CONFLICT(ymd) DO UPDATE SET
             }
         }
 
+        public bool ApplyDailyRealizedPnlToBandCapital(long realizedPnl, int bandCount = 10)
+        {
+            if (bandCount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(bandCount), "bandCount must be greater than zero.");
+
+            string today = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+            using (var conn = OpenConn())
+            {
+                EnsureBandCapitalBatchSchema(conn);
+
+                double limitLeftCash = ReadTodayLimitLeftCash(conn, today);
+                double perBandAmount = (realizedPnl + limitLeftCash) / (double)bandCount;
+
+                using (var tx = conn.BeginTransaction())
+                {
+                    try
+                    {
+                        int updatedRows;
+                        using (var cmd = new SQLiteCommand(@"
+UPDATE 배정금
+   SET 배정금액 = COALESCE(배정금액, 0) + @amount,
+       최종반영일자 = @today
+ WHERE band >= 1
+   AND band <= @bandCount
+   AND (최종반영일자 IS NULL OR 최종반영일자 <> @today);", conn, tx))
+                        {
+                            cmd.Parameters.AddWithValue("@amount", perBandAmount);
+                            cmd.Parameters.AddWithValue("@today", today);
+                            cmd.Parameters.AddWithValue("@bandCount", bandCount);
+                            updatedRows = cmd.ExecuteNonQuery();
+                        }
+
+                        if (updatedRows == 0)
+                        {
+                            tx.Commit();
+                            Console.WriteLine("[BAND_CAPITAL][SKIP] already applied today=" + today);
+                            return false;
+                        }
+
+                        using (var cmd = new SQLiteCommand(@"
+UPDATE 한도초과_남은현금
+   SET 누적금액 = 0
+ WHERE 일자 = @today;", conn, tx))
+                        {
+                            cmd.Parameters.AddWithValue("@today", today);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        tx.Commit();
+
+                        Console.WriteLine("[BAND_CAPITAL][OK] today=" + today +
+                                          " realizedPnl=" + realizedPnl.ToString(CultureInfo.InvariantCulture) +
+                                          " limitLeftCash=" + limitLeftCash.ToString(CultureInfo.InvariantCulture) +
+                                          " bandCount=" + bandCount.ToString(CultureInfo.InvariantCulture) +
+                                          " perBandAmount=" + perBandAmount.ToString(CultureInfo.InvariantCulture) +
+                                          " updatedRows=" + updatedRows.ToString(CultureInfo.InvariantCulture));
+                        return true;
+                    }
+                    catch
+                    {
+                        try { tx.Rollback(); } catch { }
+                        throw;
+                    }
+                }
+            }
+        }
+
+        private static void EnsureBandCapitalBatchSchema(SQLiteConnection conn)
+        {
+            using (var cmd = new SQLiteCommand(@"
+CREATE TABLE IF NOT EXISTS 배정금 (
+    band          INTEGER PRIMARY KEY,
+    배정금액       REAL NOT NULL DEFAULT 0,
+    최종반영일자    TEXT NULL
+);", conn))
+            {
+                cmd.ExecuteNonQuery();
+            }
+
+            EnsureColumn(conn, "배정금", "배정금액",
+                "ALTER TABLE 배정금 ADD COLUMN 배정금액 REAL NOT NULL DEFAULT 0;");
+            EnsureColumn(conn, "배정금", "최종반영일자",
+                "ALTER TABLE 배정금 ADD COLUMN 최종반영일자 TEXT NULL;");
+
+            using (var cmd = new SQLiteCommand(@"
+CREATE TABLE IF NOT EXISTS 한도초과_남은현금 (
+    일자       TEXT PRIMARY KEY,
+    누적금액    REAL NOT NULL DEFAULT 0
+);", conn))
+            {
+                cmd.ExecuteNonQuery();
+            }
+
+            EnsureColumn(conn, "한도초과_남은현금", "누적금액",
+                "ALTER TABLE 한도초과_남은현금 ADD COLUMN 누적금액 REAL NOT NULL DEFAULT 0;");
+        }
+
+        private static void EnsureColumn(
+            SQLiteConnection conn,
+            string tableName,
+            string columnName,
+            string alterSql)
+        {
+            bool exists = false;
+            using (var cmd = new SQLiteCommand("PRAGMA table_info(\"" + tableName.Replace("\"", "\"\"") + "\");", conn))
+            using (var rd = cmd.ExecuteReader())
+            {
+                while (rd.Read())
+                {
+                    string name = rd["name"] != DBNull.Value ? Convert.ToString(rd["name"]) : "";
+                    if (string.Equals(name, columnName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!exists)
+            {
+                using (var cmd = new SQLiteCommand(alterSql, conn))
+                    cmd.ExecuteNonQuery();
+            }
+        }
+
+        private static double ReadTodayLimitLeftCash(SQLiteConnection conn, string today)
+        {
+            using (var cmd = new SQLiteCommand(@"
+SELECT COALESCE(SUM(누적금액), 0)
+  FROM 한도초과_남은현금
+ WHERE 일자 = @today;", conn))
+            {
+                cmd.Parameters.AddWithValue("@today", today);
+                var result = cmd.ExecuteScalar();
+                if (result == null || result == DBNull.Value)
+                    return 0.0;
+
+                try { return Convert.ToDouble(result, CultureInfo.InvariantCulture); }
+                catch { return 0.0; }
+            }
+        }
+
         // === 자동매매용 Kodex 수량 업데이트 ===
         //h 예: UpdateKodexQty(6, 6) → band 6번 qty=6, 진짜산가격=0으로 업데이트
         public void UpdateKodexQty(int band, long newQty)
@@ -365,8 +590,9 @@ ON CONFLICT(ymd) DO UPDATE SET
                 else
                     Console.WriteLine($"[OK] band={band} qty → {newQty}");
             }
+
             // ✅ DB 업데이트 완료 신호
-            try { KodexQtyUpdated?.Invoke(band, newQty); } catch { }
+            RaiseKodexQtyUpdated(band, newQty);
         }
 
         // === kodex200_new → DataTable ===
@@ -379,7 +605,7 @@ ON CONFLICT(ymd) DO UPDATE SET
             var dt = new DataTable();
             using (var conn = OpenConn())
             using (var cmd = new SQLiteCommand(
-                "SELECT band, 팔가격, 산가격, 살가격, qty, sina FROM kodex200_new ORDER BY band ASC;", conn))
+                "SELECT band, 팔가격, 산가격, 살가격, qty FROM kodex200_new WHERE IFNULL(qty,0) > 0 ORDER BY band ASC;", conn))
             using (var da = new SQLiteDataAdapter(cmd))
             {
                 da.Fill(dt);
@@ -388,3 +614,4 @@ ON CONFLICT(ymd) DO UPDATE SET
         }
     }
 }
+// 2026-03-09 54827

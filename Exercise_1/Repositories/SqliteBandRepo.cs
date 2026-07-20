@@ -46,10 +46,11 @@ namespace Exercise_1
                     high INTEGER,
                     low  INTEGER,
                     qty  INTEGER,
-                    sina INTEGER
+                    extra_qty INTEGER NOT NULL DEFAULT 0
                 );", conn))
             {
                 cmd.ExecuteNonQuery();
+                DB_Control.EnsureExtraQtyColumn(conn);
             }
         }
 
@@ -58,7 +59,7 @@ namespace Exercise_1
             using (var conn = Open())
             using (var cmd = new SQLiteCommand(@"
                 SELECT band, COALESCE(high,0), COALESCE(low,0),
-                       COALESCE(qty,0), COALESCE(sina,0)
+                       COALESCE(qty,0)
                   FROM kodex200_new
                  WHERE band = @b;", conn))
             {
@@ -72,7 +73,6 @@ namespace Exercise_1
                         High = rd.GetInt32(1),
                         Low = rd.GetInt32(2),
                         Qty = rd.GetInt32(3),
-                        Sina = rd.GetInt32(4),
                     };
                 }
             }
@@ -82,8 +82,8 @@ namespace Exercise_1
         {
             using (var conn = Open())
             using (var cmd = new SQLiteCommand(@"
-                INSERT INTO kodex200_new(band, high, low, qty, sina)
-                VALUES(@b, 0, 0, @q, 0)
+                INSERT INTO kodex200_new(band, high, low, qty)
+                VALUES(@b, 0, 0, @q)
                 ON CONFLICT(band) DO UPDATE SET qty = excluded.Qty;", conn))
             {
                 cmd.Parameters.AddWithValue("@b", band);

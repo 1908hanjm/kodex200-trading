@@ -1,4 +1,5 @@
-﻿// 0550_부분체결확인.cs  (복붙용 / C# 7.3)
+// 0550_부분체결확인.cs
+// 0550_부분체결확인.cs  (복붙용 / C# 7.3)
 // ------------------------------------------------------------
 // ✅ A안(확정): 부분체결이면 잠금 유지, 완전체결 또는 전량취소 확정 시에만 잠금 해제
 // ------------------------------------------------------------
@@ -105,8 +106,18 @@ namespace Exercise_1
             lock (_lock)
             {
                 if (!_locked) return;
+                if (ordNo == 1302)
+                {
+                    Console.WriteLine("[CHECK][1302][0550] complete=true unlock=pending tradeWait=" + _locked +
+                                      " cumFill=" + cumFill);
+                }
                 Console.WriteLine($"[0550][COMPLETE] ordNo={ordNo} cumFill={cumFill} -> RELEASE");
                 ReleaseNoLock($"COMPLETE ordNo={ordNo}");
+                if (ordNo == 1302)
+                {
+                    Console.WriteLine("[CHECK][1302][0550] complete=true unlock=true tradeWait=" + _locked +
+                                      " cumFill=" + cumFill);
+                }
             }
         }
 

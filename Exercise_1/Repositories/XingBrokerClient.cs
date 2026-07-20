@@ -53,7 +53,7 @@ namespace Exercise_1
 
             Console.WriteLine("==================================================");
             Console.WriteLine($"[XING] ConnectAndLogin START addr='{serverAddr}' port={port} type={serverType} id='{userId}'");
-            Console.WriteLine($"[XING] pwLen={userPw.Trim().Length} certLen={certPw.Trim().Length} now={DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
+            Console.WriteLine($"[XING] pwLen={userPw.Trim().Length} certLen={certPw.Trim().Length} now={KoreaTime.Timestamp()} KST");
             Console.WriteLine("==================================================");
 
             // 1) 서버 연결

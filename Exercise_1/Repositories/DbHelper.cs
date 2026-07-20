@@ -45,11 +45,11 @@ namespace Exercise_1
                 cmd.ExecuteNonQuery();
         }
 
-        public int GetSinaForBand(int band)
+        public int GetQtyForBandLegacy(int band)
         {
             using (var conn = Open())
             using (var cmd = new SQLiteCommand(
-                "SELECT COALESCE(sina,0) FROM kodex200_new WHERE band=@b;", conn))
+                "SELECT COALESCE(qty,0) FROM kodex200_new WHERE band=@b;", conn))
             {
                 cmd.Parameters.AddWithValue("@b", band);
                 var o = cmd.ExecuteScalar();
