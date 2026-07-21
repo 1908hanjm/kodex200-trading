@@ -41,6 +41,14 @@ namespace Exercise_1
         private readonly HashSet<long> _execNoSeen = new HashSet<long>();
         private const int EXECNO_CACHE_LIMIT = 5000;
 
+        // ✅ [FIX][LATE_REG_RACE] 2026-07-21 로그 분석(ordNo=816) 대응
+        // 신규 라이브 주문 전송(0500) 직후 SC1 체결통지가 0600.TryRegister 완료보다
+        // 먼저 도착하는 레이스가 발생하면, 진짜 재기동 복구 판정(MAX_BAND_BLOCKED/
+        // sell_max_band_fallback_disabled)으로 즉시 넘어가지 않고 이 시간만큼 먼저
+        // 대기(Pending)시켜 0600 등록을 기다린다. 이 시간 안에 등록되면 자동 flush되고,
+        // 넘기면 그때 기존 차단 로직을 그대로 태운다(안전장치 자체는 그대로 유지).
+        private const int LATE_REGISTRATION_GRACE_MS = 1500;
+
         private readonly Dictionary<long, List<PendingFill>> _pendingByOrdNo = new Dictionary<long, List<PendingFill>>();
 
         private long _mockExecSeed = DateTime.Now.Ticks % 1000000000L;
@@ -310,6 +318,24 @@ namespace Exercise_1
 
             if (!mapped)
             {
+                // ✅ [FIX][LATE_REG_RACE] ordNo=816 사건 대응
+                // AddFill 실패가 "진짜 재기동 복구 대상(과거 주문)"인지, 아니면
+                // "이번 세션에서 방금 나간 라이브 주문인데 0600 등록이 SC1 체결통지보다
+                // 늦게 끝난 것뿐"인지부터 구분한다.
+                // - 복구테이블에 실제 행이 있으면(과거 주문) -> 기존 로직 그대로 진행
+                // - 복구테이블에 행이 전혀 없으면(no_row_in_recovery_table) -> 즉시
+                //   MAX_BAND_BLOCKED/BUY_BLOCK으로 차단하지 않고, 짧게 대기(Pending)
+                //   시켜 0600.TryRegister가 뒤늦게 끝나는지부터 확인한다.
+                bool hasRecoveryRow = RestartExecutionRecovery.TryGetTodayOrder(
+                    ordNo, out _, out string peekReason);
+
+                if (!hasRecoveryRow && peekReason == "no_row_in_recovery_table")
+                {
+                    QueuePendingWithLateRegistrationFallback(
+                        ordNo, execNo, filledQty, filledPrice, sideHint, scOrderQty);
+                    return;
+                }
+
                 if (!TryRestoreMissingMapping(
                     ordMap, ordNo, filledQty, filledPrice, sideHint, scOrderQty))
                     return;
@@ -346,6 +372,101 @@ namespace Exercise_1
                 ordNo, execNo, filledQty, filledPrice,
                 sideKor, band, orderQty, cumFill, remain, isComplete,
                 fromPending: false);
+        }
+
+        // ✅ [FIX][LATE_REG_RACE] 2026-07-21 로그 분석(ordNo=816) 대응 신규 메서드
+        // AddFill이 실패했지만 복구테이블에도 행이 없는 경우, 이번 세션에서 방금
+        // 나간 라이브 주문의 등록 레이스일 가능성을 먼저 검증한다.
+        // 1) 즉시 AddPending 큐에 넣는다 (0600.TryRegister -> OrdRegistered 이벤트가
+        //    발생하면 기존 FlushPendingForOrdNo/ProcessOneFill_WithMap 경로가 자동으로
+        //    이 체결을 정상 처리한다).
+        // 2) LATE_REGISTRATION_GRACE_MS 만큼만 기다렸다가, 그때까지도 등록되지 않아
+        //    큐에 그대로 남아있으면 그제서야 기존 TryRestoreMissingMapping(복구테이블
+        //    조회 -> MAX_BAND_BLOCKED/BUY_BLOCK 차단) 로직을 원래대로 실행한다.
+        // 즉, 원래 있던 안전장치(모호하면 자동매매 정지)는 그대로 유지하되,
+        // "방금 보낸 라이브 주문"을 오판하지 않도록 최종 판단만 살짝 늦춘다.
+        private void QueuePendingWithLateRegistrationFallback(
+            long ordNo,
+            long execNo,
+            int filledQty,
+            double filledPrice,
+            string sideHint,
+            int scOrderQty)
+        {
+            AddPending(ordNo, execNo, filledQty, filledPrice);
+
+            Console.WriteLine(
+                $"[0650][PENDING][LATE_REG_WAIT] ordNo={ordNo} execNo={execNo} fillQty={filledQty} " +
+                $"price={filledPrice} -> 0600 등록 대기 시작 (grace={LATE_REGISTRATION_GRACE_MS}ms)");
+
+            Task.Delay(LATE_REGISTRATION_GRACE_MS).ContinueWith(_ =>
+            {
+                try
+                {
+                    List<PendingFill> stillPending = null;
+
+                    lock (_lock)
+                    {
+                        if (_pendingByOrdNo.TryGetValue(ordNo, out var list) && list.Count > 0)
+                        {
+                            stillPending = new List<PendingFill>(list);
+                            _pendingByOrdNo.Remove(ordNo);
+                        }
+                    }
+
+                    if (stillPending == null)
+                    {
+                        // 유예시간 안에 0600 등록 -> OrdRegistered -> FlushPendingForOrdNo로
+                        // 이미 정상 처리 완료된 경우. 더 할 일 없음.
+                        return;
+                    }
+
+                    Console.WriteLine(
+                        $"[0650][PENDING][LATE_REG_TIMEOUT] ordNo={ordNo} count={stillPending.Count} " +
+                        "-> 유예시간 내 등록 안됨, 기존 재기동 복구 판정 로직으로 폴백");
+
+                    var ordMap = Login.OrdMap;
+
+                    foreach (var pf in stillPending)
+                    {
+                        try
+                        {
+                            if (ordMap != null && ordMap.Contains(pf.OrdNo))
+                            {
+                                // 타임아웃 직전 아슬아슬하게 등록됐을 경우를 위한 마지막 확인
+                                ProcessOneFill_WithMap(pf.OrdNo, pf.ExecNo, pf.FilledQty, pf.Price, fromPending: true);
+                                continue;
+                            }
+
+                            if (!TryRestoreMissingMapping(
+                                ordMap, pf.OrdNo, pf.FilledQty, pf.Price, sideHint, scOrderQty))
+                                continue;
+
+                            if (ordMap != null && ordMap.AddFill(
+                                    pf.OrdNo, pf.FilledQty,
+                                    out string sideKor, out int band, out int orderQty,
+                                    out int cumFill, out int remain, out bool isComplete, out bool alreadyComplete))
+                            {
+                                if (!alreadyComplete)
+                                {
+                                    ProcessMappedResult(
+                                        pf.OrdNo, pf.ExecNo, pf.FilledQty, pf.Price,
+                                        sideKor, band, orderQty, cumFill, remain, isComplete,
+                                        fromPending: true);
+                                }
+                            }
+                        }
+                        catch (Exception exOne)
+                        {
+                            Console.WriteLine("[0650][PENDING][LATE_REG_TIMEOUT] EX ordNo=" + pf.OrdNo + " " + exOne.Message);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[0650][PENDING][LATE_REG_TIMEOUT] outer EX ordNo=" + ordNo + " " + ex.Message);
+                }
+            });
         }
 
         private bool TryRestoreMissingMapping(

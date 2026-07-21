@@ -624,7 +624,7 @@ namespace Exercise_1
                     continue;
                 }
 
-                bool marked = TryMarkCompleteFromBroker(row.OrdNo, match.CheQty, match.Price, out string markReason);
+                bool marked = TryMarkCompleteFromBroker(row.OrdNo, row.Band, row.Side, match.CheQty, match.Price, out string markReason);
                 if (!marked)
                 {
                     Log("[RESTART_RECOVERY][T0425_RECONCILE][MARK_FAILED] ordNo=" + row.OrdNo +
@@ -645,6 +645,8 @@ namespace Exercise_1
 
         private static bool TryMarkCompleteFromBroker(
             long ordNo,
+            int band,
+            string side,
             long brokerCumFill,
             double brokerAvgPrice,
             out string reason)
@@ -678,7 +680,6 @@ namespace Exercise_1
                         }
                     }
                 }
-                return true;
             }
             catch (Exception ex)
             {
@@ -686,6 +687,30 @@ namespace Exercise_1
                 LogError("MarkCompleteFromBroker", ordNo, ex);
                 return false;
             }
+
+            // ✅ [FIX 2026-07-21] T0425 catch-up 경로(여기)는 완전체결(brokerRemainQty<=0)이
+            // 확인된 경우에만 호출되는데, 지금까지 이 경로에서는 DB반영완료를 세팅하지 않아
+            // Complete=true/DbApplied=false 상태가 영구히 남아 매 부팅마다
+            // Login_04_Real_Test시작.cs의 filled_but_db_unapplied STOP을 재발시켰다.
+            // 정상 SC1 실시간 경로(0650_SC1_수신처리.cs:956)와 동일하게 MarkDbApplied를
+            // 이어서 호출해 DB반영완료=1을 세팅한다.
+            bool dbApplied = MarkDbApplied(
+                ordNo: ordNo,
+                execNo: 0,
+                band: band,
+                side: side,
+                fillQty: (int)brokerCumFill,
+                cumFill: (int)brokerCumFill,
+                remain: 0,
+                source: "T0425_RECONCILE");
+
+            if (!dbApplied)
+            {
+                reason = "mark_complete_ok_but_db_applied_failed";
+                return false;
+            }
+
+            return true;
         }
 
         private static SQLiteConnection Open()
