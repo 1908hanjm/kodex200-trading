@@ -85,6 +85,7 @@ namespace Exercise_1
 
         private readonly object _lock = new object();
         private TaskCompletionSource<IList<OrderRow>> _t0425Tcs;
+        private readonly SemaphoreSlim _t0425Gate = new SemaphoreSlim(1, 1); // LoadOpenOrdersAsync 동시 진입 직렬화 (겹치면 _t0425Tcs가 덮어써지는 레이스 방지)
         private readonly object _recoveryQueryLock = new object();
         private readonly SemaphoreSlim _recoveryQueryGate = new SemaphoreSlim(1, 1);
         private TaskCompletionSource<IList<OrderRow>> _t0425RecoveryTcs;
@@ -822,59 +823,73 @@ namespace Exercise_1
         // ─────────────────────────────────────────────
         public async Task<IList<OrderRow>> LoadOpenOrdersAsync(string accountNo, string pwd, string symbol = null)
         {
-            var tcs = new TaskCompletionSource<IList<OrderRow>>(TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (_lock) { _t0425Tcs = tcs; }
-
+            // ✅ 동시 진입 직렬화: _t0425/_t0425Tcs는 인스턴스당 하나뿐이라
+            // 두 호출이 겹치면 나중 호출이 먼저 호출의 TCS를 덮어써 먼저 호출이
+            // 응답을 영영 못 받고 타임아웃으로 빈 리스트를 반환하는 레이스가 있었다.
+            // 여기서 대기시켜 항상 한 번에 하나의 t0425 요청만 진행되도록 한다.
+            await _t0425Gate.WaitAsync().ConfigureAwait(false);
             try
             {
+                var tcs = new TaskCompletionSource<IList<OrderRow>>(TaskCreationOptions.RunContinuationsAsynchronously);
+                lock (_lock) { _t0425Tcs = tcs; }
+
                 string acc = accountNo ?? "";
                 string pw = pwd ?? "";
                 string sym = symbol ?? "";
 
-                _log.Info($"[t0425] Request ENTER acc='{acc}' pwLen={pw.Length} symbol='{sym}' " +
-                          $"callerThread={Thread.CurrentThread.ManagedThreadId}/{Thread.CurrentThread.GetApartmentState()} owner={_ownerThreadId}/{_ownerApt}");
-
-                int ret = await InvokeOnUiAsync(() =>
+                try
                 {
-                    _t0425.SetFieldData("t0425InBlock", "accno", 0, acc);
-                    _t0425.SetFieldData("t0425InBlock", "passwd", 0, pw);
-                    _t0425.SetFieldData("t0425InBlock", "expcode", 0, string.IsNullOrEmpty(sym) ? "" : sym);
-                    _t0425.SetFieldData("t0425InBlock", "chegb", 0, "0");
-                    _t0425.SetFieldData("t0425InBlock", "medosu", 0, "0");
-                    _t0425.SetFieldData("t0425InBlock", "sortgb", 0, "1");
-                    _t0425.SetFieldData("t0425InBlock", "cts_ordno", 0, "");
+                    _log.Info($"[t0425] Request ENTER acc='{acc}' pwLen={pw.Length} symbol='{sym}' " +
+                              $"callerThread={Thread.CurrentThread.ManagedThreadId}/{Thread.CurrentThread.GetApartmentState()} owner={_ownerThreadId}/{_ownerApt}");
 
-                    return _t0425.Request(false);
-                }).ConfigureAwait(false);
+                    int ret = await InvokeOnUiAsync(() =>
+                    {
+                        _t0425.SetFieldData("t0425InBlock", "accno", 0, acc);
+                        _t0425.SetFieldData("t0425InBlock", "passwd", 0, pw);
+                        _t0425.SetFieldData("t0425InBlock", "expcode", 0, string.IsNullOrEmpty(sym) ? "" : sym);
+                        _t0425.SetFieldData("t0425InBlock", "chegb", 0, "0");
+                        _t0425.SetFieldData("t0425InBlock", "medosu", 0, "0");
+                        _t0425.SetFieldData("t0425InBlock", "sortgb", 0, "1");
+                        _t0425.SetFieldData("t0425InBlock", "cts_ordno", 0, "");
 
-                _log.Info("[t0425] Request ret=" + ret);
-                if (ret < 0)
+                        return _t0425.Request(false);
+                    }).ConfigureAwait(false);
+
+                    _log.Info("[t0425] Request ret=" + ret);
+                    if (ret < 0)
+                    {
+                        lock (_lock) { if (_t0425Tcs == tcs) _t0425Tcs = null; }
+                        return new List<OrderRow>();
+                    }
+                }
+                catch (Exception ex)
                 {
+                    lock (_lock) { if (_t0425Tcs == tcs) _t0425Tcs = null; }
+
+                    string msg = "t0425 전송 예외: " + ex.Message;
+                    _log.Error("[t0425] " + msg);
+                    RaiseOrderRejected(msg);
+                    return new List<OrderRow>();
+                }
+
+                var completed = await Task.WhenAny(tcs.Task, Task.Delay(2000)).ConfigureAwait(false);
+                if (completed != tcs.Task)
+                {
+                    _log.Warn($"[t0425][TIMEOUT] acc='{acc}' symbol='{sym}' waitMs=2000 " +
+                              $"callerThread={Thread.CurrentThread.ManagedThreadId}/{Thread.CurrentThread.GetApartmentState()} " +
+                              "reason=no_ReceiveData_within_timeout -> returning empty list");
                     lock (_lock) { if (_t0425Tcs == tcs) _t0425Tcs = null; }
                     return new List<OrderRow>();
                 }
-            }
-            catch (Exception ex)
-            {
+
+                var result = tcs.Task.Result ?? new List<OrderRow>();
                 lock (_lock) { if (_t0425Tcs == tcs) _t0425Tcs = null; }
-
-                string msg = "t0425 전송 예외: " + ex.Message;
-                _log.Error("[t0425] " + msg);
-                RaiseOrderRejected(msg);
-                return new List<OrderRow>();
+                return result;
             }
-
-            var completed = await Task.WhenAny(tcs.Task, Task.Delay(2000)).ConfigureAwait(false);
-            if (completed != tcs.Task)
+            finally
             {
-                _log.Warn("[t0425] timeout");
-                lock (_lock) { if (_t0425Tcs == tcs) _t0425Tcs = null; }
-                return new List<OrderRow>();
+                _t0425Gate.Release();
             }
-
-            var result = tcs.Task.Result ?? new List<OrderRow>();
-            lock (_lock) { if (_t0425Tcs == tcs) _t0425Tcs = null; }
-            return result;
         }
 
         public async Task<bool> TryRecoverTimedOutOrderAsync(string requestId)
