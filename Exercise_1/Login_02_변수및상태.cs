@@ -203,7 +203,7 @@ namespace Exercise_1
         private readonly List<int> _recent = new List<int>();
         public static bool TradingEnabled { get; private set; } = false;
         public static bool IsReplayMode = false;
-        private _060_listView3_당일거래 _lv3Manager;
+        private _0670_listView3_당일거래 _lv3Manager;
         private long _lv3LastReloadMs = 0;
         private int _lv3ReloadInFlight = 0;
         private const int LV3_MIN_INTERVAL_MS = 1500;

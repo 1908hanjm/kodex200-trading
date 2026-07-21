@@ -32,7 +32,7 @@ namespace Exercise_1
             _orderSvc.OrderRejected += msg => OnOrderRejected_OnLoop(msg);
             _orderSvc.OrderUpdated += row => OnOrderUpdated_OnLoop(row);
 
-            _lv3Manager = new _060_listView3_당일거래(
+            _lv3Manager = new _0670_listView3_당일거래(
                 this,
                 this.listView3,
                 _orderSvc,
