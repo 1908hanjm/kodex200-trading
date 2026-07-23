@@ -1876,8 +1876,8 @@ namespace Exercise_1
                     var target = list.FirstOrDefault(x => x != null && x.Band == targetBand);
                     if (target == null)
                         zeroCount++;
-                    else if (target.Qty > 0)
-                        zeroCount++;
+                    // ✅ [P2 2026-07-22] target.Qty > 0(이미 보유중)인 경우는 빈 밴드가 아니므로
+                    // zeroCount를 증가시키지 않는다 (기존에는 반대로 증가시켜 분모가 부풀려졌음).
                 }
 
                 return zeroCount > 0 ? zeroCount : 1;
