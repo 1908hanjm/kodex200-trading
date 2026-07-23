@@ -1299,6 +1299,24 @@ namespace Exercise_1
                     return SlideResult.Fail;
                 }
 
+                // ✅ [P1 2026-07-22] GENERAL/2160/2310 경로와 동일하게 SLIDING 경로에도
+                // 배정금(BAND_CAP) 한도 클램프를 적용한다. 기존에는 이 경로만 clamp가 빠져 있었다.
+                var bandCapClamp = 배정금_한도체크.ClampToBandCapital(targetBuyBand, qty, firePrice);
+                if (bandCapClamp.leftoverCash > 0)
+                {
+                    Console.WriteLine("[BUY][BAND_CAP][CLAMP][SLIDING] band=" + targetBuyBand +
+                                      " requestedQty=" + qty +
+                                      " clampedQty=" + bandCapClamp.clampedQty +
+                                      " leftoverCash=" + bandCapClamp.leftoverCash);
+                    배정금_한도체크.AddOverLimitLeftoverCash(bandCapClamp.leftoverCash);
+                }
+                qty = bandCapClamp.clampedQty;
+                if (qty <= 0)
+                {
+                    Console.WriteLine("[0300][SLIDE][SKIP] reason=BAND_CAP_EXHAUSTED targetBand=" + targetBuyBand);
+                    return SlideResult.Fail;
+                }
+
                 requiredCash = qty * firePrice;
 
                 // ✅ 기존 현금 부족 슬라이딩
