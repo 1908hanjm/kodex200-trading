@@ -1414,6 +1414,19 @@ namespace Exercise_1
                 return SlideResult.Fail;
             }
 
+            // ✅ [P0 2026-07-22] 이미 보유중인 밴드는 강제슬라이딩이 필요치 않으면 추가매수하지 않는다.
+            // targetAlreadyHeld=True인데 Decide()가 General을 반환하면 isNormalBuy 조건(!targetAlreadyHeld)에
+            // 걸려 이 else(SLIDING) 분기로 떨어지는데, needForcedSlideByFixedHolding/ByCash가 모두 False라
+            // shouldForceSlide=False로 나와도 이 게이트가 없으면 그대로 아래 일반 발주로 흘러 이중매수가 발생했다.
+            if (targetAlreadyHeld && !shouldForceSlide)
+            {
+                Console.WriteLine(
+                    "[0300][SLIDE][SKIP] reason=ALREADY_HELD_NO_FORCE_NEEDED " +
+                    "targetBand=" + targetBuyBand +
+                    " shouldForceSlide=" + shouldForceSlide);
+                return SlideResult.Fail;
+            }
+
             Console.WriteLine(
                 $"[0300.BUY.REQUEST] firePrice={firePrice:#,0} decisionBand(K)={decisionBandK} qty(cashBased)={qty:#,0} " +
                 $"updateQtyBand(K+1)={targetBuyBand} startBandNow={startBandNow}"
