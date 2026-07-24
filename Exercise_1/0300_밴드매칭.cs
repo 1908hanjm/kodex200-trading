@@ -1315,6 +1315,24 @@ namespace Exercise_1
                     return SlideResult.Fail;
                 }
 
+                // ✅ [P1 2026-07-22] GENERAL/2160/2310 경로와 동일하게 SLIDING 경로에도
+                // 배정금(BAND_CAP) 한도 클램프를 적용한다. 기존에는 이 경로만 clamp가 빠져 있었다.
+                var bandCapClamp = 배정금_한도체크.ClampToBandCapital(targetBuyBand, qty, firePrice);
+                if (bandCapClamp.leftoverCash > 0)
+                {
+                    Console.WriteLine("[BUY][BAND_CAP][CLAMP][SLIDING] band=" + targetBuyBand +
+                                      " requestedQty=" + qty +
+                                      " clampedQty=" + bandCapClamp.clampedQty +
+                                      " leftoverCash=" + bandCapClamp.leftoverCash);
+                    배정금_한도체크.AddOverLimitLeftoverCash(bandCapClamp.leftoverCash);
+                }
+                qty = bandCapClamp.clampedQty;
+                if (qty <= 0)
+                {
+                    Console.WriteLine("[0300][SLIDE][SKIP] reason=BAND_CAP_EXHAUSTED targetBand=" + targetBuyBand);
+                    return SlideResult.Fail;
+                }
+
                 requiredCash = qty * firePrice;
 
                 // ✅ 기존 현금 부족 슬라이딩
@@ -1427,6 +1445,19 @@ namespace Exercise_1
 
                 Console.WriteLine("[0300][SLIDE] handled=false -> enter cooldown and stop BUY");
                 EnterCooldownSeconds(3, "SLIDE_FAIL");
+                return SlideResult.Fail;
+            }
+
+            // ✅ [P0 2026-07-22] 이미 보유중인 밴드는 강제슬라이딩이 필요치 않으면 추가매수하지 않는다.
+            // targetAlreadyHeld=True인데 Decide()가 General을 반환하면 isNormalBuy 조건(!targetAlreadyHeld)에
+            // 걸려 이 else(SLIDING) 분기로 떨어지는데, needForcedSlideByFixedHolding/ByCash가 모두 False라
+            // shouldForceSlide=False로 나와도 이 게이트가 없으면 그대로 아래 일반 발주로 흘러 이중매수가 발생했다.
+            if (targetAlreadyHeld && !shouldForceSlide)
+            {
+                Console.WriteLine(
+                    "[0300][SLIDE][SKIP] reason=ALREADY_HELD_NO_FORCE_NEEDED " +
+                    "targetBand=" + targetBuyBand +
+                    " shouldForceSlide=" + shouldForceSlide);
                 return SlideResult.Fail;
             }
 
@@ -1861,8 +1892,8 @@ namespace Exercise_1
                     var target = list.FirstOrDefault(x => x != null && x.Band == targetBand);
                     if (target == null)
                         zeroCount++;
-                    else if (target.Qty > 0)
-                        zeroCount++;
+                    // ✅ [P2 2026-07-22] target.Qty > 0(이미 보유중)인 경우는 빈 밴드가 아니므로
+                    // zeroCount를 증가시키지 않는다 (기존에는 반대로 증가시켜 분모가 부풀려졌음).
                 }
 
                 return zeroCount > 0 ? zeroCount : 1;
