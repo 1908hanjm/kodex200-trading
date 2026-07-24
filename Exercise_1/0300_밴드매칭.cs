@@ -822,32 +822,48 @@ namespace Exercise_1
                 return;
             }
 
-            string side;
-            long firePrice;
-            int queuedBand;
-            int executeBand;
-            int sellDecisionBand;
+            string side = null;
+            long firePrice = 0;
+            int queuedBand = 0;
+            int executeBand = 0;
+            int sellDecisionBand = 0;
 
-            TaskCompletionSource<bool> myTcs;
+            TaskCompletionSource<bool> myTcs = null;
+            bool emptyQueueOnEntry = false;
 
             lock (_qLock)
             {
                 if (!_chainActive) return;
-                if (_bandQueue.Count <= 0) return;
+                if (_bandQueue.Count <= 0)
+                {
+                    emptyQueueOnEntry = true;
+                }
+                else
+                {
+                    TradeQueueItem item = _bandQueue.Dequeue();
+                    queuedBand = item.QueuedBand;
+                    executeBand = item.ExecuteBand;
+                    sellDecisionBand = item.SellDecisionBand;
+                    side = !string.IsNullOrEmpty(item.Side) ? item.Side : _chainSide;
+                    firePrice = item.FirePrice > 0 ? item.FirePrice : _chainFirePrice;
 
-                TradeQueueItem item = _bandQueue.Dequeue();
-                queuedBand = item.QueuedBand;
-                executeBand = item.ExecuteBand;
-                sellDecisionBand = item.SellDecisionBand;
-                side = !string.IsNullOrEmpty(item.Side) ? item.Side : _chainSide;
-                firePrice = item.FirePrice > 0 ? item.FirePrice : _chainFirePrice;
+                    _inFlightBand = executeBand;
 
-                _inFlightBand = executeBand;
+                    ++_sendSeq;
+                    myTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _inFlightSendDoneTcs = myTcs;
+                    _inFlightSendBand = executeBand;
+                }
+            }
 
-                ++_sendSeq;
-                myTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                _inFlightSendDoneTcs = myTcs;
-                _inFlightSendBand = executeBand;
+            if (emptyQueueOnEntry)
+            {
+                // ✅ [2026-07-24 FIX] SELL qty<=0 필터링 등으로 큐가 빈 채 체인에 진입한 경우
+                // 여기서 조용히 return하면 _chainActive=true가 고착되어 이후 모든 트리거가
+                // "SKIP (chain running)"으로 무한 차단된다. ForceStopChain으로 안전 종료한다.
+                Console.WriteLine("[0300][CHAIN] EmptyQueueOnEntry -> ForceStopChain");
+                ForceStopChain("EmptyQueueOnEntry");
+                return;
             }
 
             RefreshQueueCount();
