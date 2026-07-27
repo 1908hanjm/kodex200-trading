@@ -1068,6 +1068,69 @@ namespace Exercise_1
                     return missing;
                 }
 
+                // ✅ [P0][0300_NORMAL_BUY 캐시우선] 0500 CASH_GUARD(0500_매매전송_Xing.cs)와
+                // 동일한 순서(1000_LOCAL → 0900_SHARED)·동일한 freshness 기준으로
+                // 라이브 조회 전에 캐시를 먼저 확인한다.
+                // 배경: 부팅 직후 0900이 CSPAQ12200을 이미 조회해 성공했는데도
+                // 이 경로는 캐시를 전혀 보지 않고 항상 라이브 GATE로 직행해
+                // Throttle(10초)에 걸려 매수기회를 상실했음.
+                // freshness 임계값은 0500과 값이 갈리지 않도록 매직넘버 대신
+                // Cspaq12200GlobalGate.MinIntervalMs(스로틀 간격, 10초)를 그대로 참조한다.
+                const int FRESH_THRESHOLD_MS = Cspaq12200GlobalGate.MinIntervalMs;
+
+                try
+                {
+                    if (NormalBuyGetCachedLocalResult != null)
+                    {
+                        var cached = NormalBuyGetCachedLocalResult();
+                        var lastResult = cached.result;
+                        double agoMs = (DateTime.UtcNow - cached.at).TotalMilliseconds;
+
+                        if (lastResult != null && lastResult.CanCalculateBuyQty &&
+                            agoMs >= 0 && agoMs < FRESH_THRESHOLD_MS)
+                        {
+                            Console.WriteLine("[CASH_GUARD][CACHE_HIT] source=1000_LOCAL caller=0300_NORMAL_BUY" +
+                                              " agoMs=" + (int)agoMs +
+                                              " thresholdMs=" + FRESH_THRESHOLD_MS +
+                                              " cachedOrderableCash=" + lastResult.OrderableCash +
+                                              " → 재조회 생략");
+                            return lastResult;
+                        }
+                    }
+                }
+                catch (Exception exCache)
+                {
+                    Console.WriteLine("[CASH_GUARD][CACHE_CHECK_EX] caller=0300_NORMAL_BUY " +
+                                      exCache.Message + " → 실조회 진행");
+                }
+
+                try
+                {
+                    long sharedCash;
+                    double sharedAgoMs;
+                    if (Cspaq12200SharedCache.TryGetFresh(FRESH_THRESHOLD_MS, out sharedCash, out sharedAgoMs))
+                    {
+                        var cachedResult = OrderableCashQueryResult.From(
+                            sharedCash > 0 ? OrderableCashResultKind.Success : OrderableCashResultKind.ActualZeroCash,
+                            sharedCash, 0, "CACHED_FROM_0900");
+
+                        Console.WriteLine("[CASH_GUARD][CACHE_HIT] source=0900_SHARED caller=0300_NORMAL_BUY" +
+                                          " agoMs=" + (int)sharedAgoMs +
+                                          " thresholdMs=" + FRESH_THRESHOLD_MS +
+                                          " cachedOrderableCash=" + sharedCash +
+                                          " → 재조회 생략");
+                        return cachedResult;
+                    }
+                }
+                catch (Exception exShared)
+                {
+                    Console.WriteLine("[CASH_GUARD][CACHE_CHECK_EX] caller=0300_NORMAL_BUY " +
+                                      exShared.Message + " → 실조회 진행");
+                }
+
+                Console.WriteLine("[CASH_GUARD][CACHE_MISS] caller=0300_NORMAL_BUY" +
+                                  " thresholdMs=" + FRESH_THRESHOLD_MS + " → 실조회 진행");
+
                 // ✅ [P0-FIX] CSPAQ12200 Throttle(10초 최소간격)로 QueryFailed가 나면
                 // t0424([T0424][RETRY])와 동일하게 짧게 재시도한 뒤에만 실패로 확정한다.
                 // 기존 버그: Throttle=QueryFailed를 즉시 CASH_QUERY_FAILED로 취급해
