@@ -674,6 +674,15 @@ namespace Exercise_1
                 }
             };
 
+            // ✅ [0300 NormalBuy 캐시우선] 0300이 라이브 조회 전에 1000_LOCAL 캐시를
+            // 직접 확인할 수 있도록 cash1000.LastResult/LastResultAt을 그대로 노출한다.
+            // (조회/부수효과 없음 — 현재 보관된 값을 읽기만 함)
+            밴드매칭.NormalBuyGetCachedLocalResult = () =>
+            {
+                if (_cashQuery == null) return (null, DateTime.MinValue);
+                return (_cashQuery.LastResult, _cashQuery.LastResultAt);
+            };
+
             밴드매칭.NormalBuyGetOrderableCashAsync = async () =>
             {
                 try

@@ -113,6 +113,11 @@ namespace Exercise_1
         public static Func<long, int, int, int, long, Task<SlideResult>> ForcedSlidingHandler;
 
         public static Func<Task<OrderableCashQueryResult>> NormalBuyGetOrderableCashAsync;
+
+        // ✅ [0300 NormalBuy 캐시우선] 1000_LOCAL 캐시(cash1000.LastResult/LastResultAt) 조회용.
+        // Login_04에서 연결. cash1000 인스턴스가 없거나 아직 조회된 적 없으면 (null, DateTime.MinValue) 반환.
+        public static Func<(OrderableCashQueryResult result, DateTime at)> NormalBuyGetCachedLocalResult;
+
         public static Func<Task<long>> ForcedSlideGetOrderableCashAsync;
 
         public static Func<string, string, int, int, int, Task<bool>> UpSlideSendOrderAsync;
