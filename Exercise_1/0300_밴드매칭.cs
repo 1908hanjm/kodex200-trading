@@ -1135,8 +1135,15 @@ namespace Exercise_1
                 // t0424([T0424][RETRY])와 동일하게 짧게 재시도한 뒤에만 실패로 확정한다.
                 // 기존 버그: Throttle=QueryFailed를 즉시 CASH_QUERY_FAILED로 취급해
                 // 매수 체인을 재시도 없이 중단시켰음.
-                const int MAX_RETRY = 2;
+                //
+                // ✅ [P1-FIX] 기존 1.5초×2회=3초는 CSPAQ12200 스로틀 간격
+                // (Cspaq12200GlobalGate.MinIntervalMs=10초)보다 짧아 구조적으로
+                // 통과가 불가능했음 (0500_매매전송_Xing.cs CASH_GUARD가 07-20 커밋
+                // 00d4d6e에서 이미 겪고 고친 것과 동일한 결함). 총 대기시간이
+                // 스로틀 간격을 확실히 넘기도록 0500과 동일한 방식으로 계산한다.
                 const int RETRY_DELAY_MS = 1500;
+                int MAX_RETRY = (int)Math.Ceiling(
+                    (double)Cspaq12200GlobalGate.MinIntervalMs / RETRY_DELAY_MS);
 
                 OrderableCashQueryResult result = null;
                 for (int attempt = 0; attempt <= MAX_RETRY; attempt++)
